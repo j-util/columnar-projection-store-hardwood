@@ -63,6 +63,19 @@ class HardwoodProjectionProcessorTest {
         assertFalse(generated.contains(".add("), generated);
         assertFalse(generated.contains("java.lang.reflect"), generated);
         assertFalse(generated.contains("Class.forName"), generated);
+        assertTrue(generated.contains(
+                "int expectedSize = java.lang.Math.toIntExact(\n"
+                        + "                reader.getFileMetaData().numRows());"),
+                generated);
+        assertFalse(generated.contains("reader.isMultiFile()"), generated);
+        assertTrue(generated.contains(
+                "load(dev.hardwood.reader.ColumnReaders readers, "
+                        + "int expectedSize)"),
+                generated);
+        assertTrue(generated.contains(
+                "new example.PriceProjection__ColumnarProjectionStore("
+                        + "expectedSize)"),
+                generated);
         assertTrue(generated.contains("batch.id(column0.getLongs())")
                 || generated.contains("batch.id(column1.getLongs())")
                 || generated.contains("batch.id(column2.getLongs())"),

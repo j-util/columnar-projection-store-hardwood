@@ -537,14 +537,18 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "     *");
         line(source, "     * <p>This method closes only the projected {@code "
                 + "ColumnReaders} it creates. It never closes {@code reader}. "
-                + "A single-file row count that fits in an {@code int} is "
-                + "used only as an initial-capacity hint; multi-file and very "
-                + "large inputs use zero.");
+                + "For a single-file reader, that file's complete row count "
+                + "is used as an initial-capacity hint. For a multi-file "
+                + "reader, Hardwood exposes the first file's metadata, so "
+                + "that file's row count is used as the hint while later "
+                + "files remain lazily opened by Hardwood.");
         line(source, "     *");
         line(source, "     * @param reader the caller-owned Parquet reader");
         line(source, "     * @return a sealed generated store");
         line(source, "     * @throws java.lang.NullPointerException if {@code "
                 + "reader} is null");
+        line(source, "     * @throws java.lang.ArithmeticException if the "
+                + "first file's row count does not fit in an {@code int}");
         line(source, "     * @throws java.lang.IllegalArgumentException if the "
                 + "Hardwood schema does not match this projection");
         line(source, "     */");
@@ -552,16 +556,8 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + " load(dev.hardwood.reader.ParquetFileReader reader) {");
         line(source, "        java.util.Objects.requireNonNull(reader, "
                 + "\"reader\");");
-        line(source, "        int expectedSize = 0;");
-        line(source, "        if (!reader.isMultiFile()) {");
-        line(source, "            long rowCount = reader.getFileMetaData()."
-                + "numRows();");
-        line(source, "            if (rowCount >= 0");
-        line(source, "                    && rowCount <= java.lang.Integer."
-                + "MAX_VALUE) {");
-        line(source, "                expectedSize = (int) rowCount;");
-        line(source, "            }");
-        line(source, "        }");
+        line(source, "        int expectedSize = java.lang.Math.toIntExact(");
+        line(source, "                reader.getFileMetaData().numRows());");
         line(source, "        try (dev.hardwood.reader.ColumnReaders columns "
                 + "= reader.buildColumnReaders(projection()).build()) {");
         line(source, "            return load(columns, expectedSize);");

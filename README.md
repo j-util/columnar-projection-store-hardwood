@@ -132,12 +132,16 @@ try (var columns = reader
 - `load(ParquetFileReader)` requires a non-null reader, creates the projected
   `ColumnReaders`, and closes only those created column readers. It never
   closes the caller's `ParquetFileReader`.
-- For a single file, that overload uses the file row count as an initial
-  capacity hint when it fits in an `int`. Multi-file and larger inputs use
-  zero.
+- For a single file, that overload uses the file's complete row count as its
+  initial-capacity hint. For a multi-file reader, Hardwood exposes only the
+  first file's metadata, so the overload uses the first file's row count as a
+  hint; later files remain lazily opened by Hardwood and the store grows as
+  needed. A first-file row count outside the `int` range causes
+  `ArithmeticException`.
 - `load(ColumnReaders, int)` never closes the caller's `ColumnReaders`. It
   consumes them to exhaustion. A negative capacity hint is rejected before
-  input is advanced.
+  input is advanced. Clients that know or estimate the combined size of a
+  multi-file input can pass it through this existing explicit-capacity path.
 - All column mappings are validated before the first batch is advanced. Every
   Hardwood batch is appended through the generated common-range batch API
   using `[0, recordCount)`; array capacity beyond the logical row count is

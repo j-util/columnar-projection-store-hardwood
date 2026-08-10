@@ -192,6 +192,41 @@ class HardwoodLoaderIntegrationTest {
     }
 
     @Test
+    void singleFileConvenienceLoadPreservesRowsInOrder() throws Exception {
+        Path parquet = temporaryDirectory.resolve("single-file.parquet");
+        writeInts(parquet, 7, 8, 9);
+
+        ProjectionStore<?> store = loadWithParquetReader(
+                "example.IntProjectionHardwoodLoader", parquet);
+
+        assertIntValues(store, 7, 8, 9);
+    }
+
+    @Test
+    void multiFileConvenienceLoadGrowsPastFirstFileHintAndPreservesOrder()
+            throws Exception {
+        Path first = temporaryDirectory.resolve("multi-first.parquet");
+        Path second = temporaryDirectory.resolve("multi-second.parquet");
+        writeInts(first, 10);
+        writeInts(second, 20, 21, 22);
+
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        try (ParquetFileReader reader = ParquetFileReader.openAll(List.of(
+                InputFile.of(first), InputFile.of(second)))) {
+            assertTrue(reader.isMultiFile());
+            assertEquals(1, reader.getFileMetaData().numRows(),
+                    "Hardwood exposes the first file's row count");
+
+            ProjectionStore<?> store = (ProjectionStore<?>) loader
+                    .getMethod("load", ParquetFileReader.class)
+                    .invoke(null, reader);
+
+            assertIntValues(store, 10, 20, 21, 22);
+        }
+    }
+
+    @Test
     void negativeExpectedSizeDoesNotConsumeCallerReaders() throws Exception {
         Path parquet = temporaryDirectory.resolve("negative-size.parquet");
         writeAllMappings(parquet, 5);
@@ -402,6 +437,17 @@ class HardwoodLoaderIntegrationTest {
         return projection.getMethod(method).invoke(view);
     }
 
+    private void assertIntValues(ProjectionStore<?> store, int... expected)
+            throws Exception {
+        assertEquals(expected.length, store.size());
+        Class<?> projection = generatedClassLoader.loadClass(
+                "example.IntProjection");
+        for (int row = 0; row < expected.length; row++) {
+            assertEquals(expected[row],
+                    invoke(projection, store.viewAt(row), "value"));
+        }
+    }
+
     private static String allMessages(Throwable failure) {
         StringBuilder messages = new StringBuilder();
         for (Throwable current = failure;
@@ -444,6 +490,15 @@ class HardwoodLoaderIntegrationTest {
             });
         }
         write(path, ALL_MAPPINGS_SCHEMA, rows);
+    }
+
+    private static void writeInts(Path path, int... values)
+            throws IOException {
+        List<Row> rows = new java.util.ArrayList<>();
+        for (int value : values) {
+            rows.add(group -> group.add("value", value));
+        }
+        write(path, "message test { required int32 value; }", rows);
     }
 
     private static void write(Path path, String schemaText, List<Row> rows)
