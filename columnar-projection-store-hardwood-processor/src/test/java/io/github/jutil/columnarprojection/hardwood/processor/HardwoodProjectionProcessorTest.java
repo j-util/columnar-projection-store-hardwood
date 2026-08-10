@@ -205,6 +205,39 @@ class HardwoodProjectionProcessorTest {
     }
 
     @Test
+    void preservesColumnarSchemaErrorsWithoutFalseMissingProcessorDiagnostic()
+            throws Exception {
+        String source = """
+                package example;
+
+                public final class Outer {
+                    @io.github.jutil.columnarprojection.ProjectionSchema
+                    @io.github.jutil.columnarprojection.hardwood.HardwoodProjection
+                    private interface InvalidProjection<T> {
+                        T value();
+                    }
+                }
+                """;
+        CompilerTestSupport.Compilation compilation = compile(
+                temporaryDirectory.resolve("invalid-schema"),
+                Map.of("example.Outer", source),
+                false);
+
+        assertFalse(compilation.successful(), compilation.messages());
+        assertTrue(compilation.messages().contains(
+                "Projection schema interfaces must not be generic"),
+                compilation.messages());
+        assertTrue(compilation.messages().contains(
+                "Projection schemas and their enclosing types must not be "
+                        + "private"),
+                compilation.messages());
+        assertFalse(compilation.messages().contains(
+                "Columnar Projection Store's annotation processor did not "
+                        + "generate the store contract"),
+                compilation.messages());
+    }
+
+    @Test
     void reportsGeneratedLoaderNameCollision() throws Exception {
         Map<String, String> sources = new LinkedHashMap<>();
         sources.put("example.PriceProjection", SIMPLE_SCHEMA);

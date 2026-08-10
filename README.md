@@ -191,6 +191,15 @@ Hardwood's codec libraries are optional dependencies. Add the codec required
 by the files you read—such as Snappy, Zstandard, LZ4, or Brotli—to the
 application. This integration does not choose or add codecs for consumers.
 
+On Java 26, Hardwood `1.0.0.Final` may emit a native-access warning from its
+optional libdeflate acceleration; the warning originates in Hardwood, not this
+integration library. Hardwood's
+[configuration guide](https://hardwood.dev/1.0.0.Final/reference/configuration/)
+recommends `--enable-native-access=ALL-UNNAMED` when enabling that acceleration.
+Add the option to the application JVM to authorize the native access and avoid
+the warning. It is not required merely because the warning appears when
+execution otherwise continues.
+
 ## Build and tests
 
 ```shell

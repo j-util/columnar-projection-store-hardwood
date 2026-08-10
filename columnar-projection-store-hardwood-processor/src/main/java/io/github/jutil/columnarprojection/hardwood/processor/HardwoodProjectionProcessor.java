@@ -111,7 +111,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         }
 
         if (roundEnvironment.processingOver()) {
-            reportMissingColumnarProcessor();
+            reportMissingColumnarProcessor(roundEnvironment);
         } else {
             generateReadyLoaders();
         }
@@ -603,7 +603,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "        java.util.Objects.requireNonNull(readers, "
                 + "\"readers\");");
         line(source, "        if (expectedSize < 0) {");
-        line(source, "            throw new java.lang.IllegalArgumentException(" 
+        line(source, "            throw new java.lang.IllegalArgumentException("
                 + "\"expectedSize must be greater than or equal to zero: \" "
                 + "+ expectedSize);");
         line(source, "        }");
@@ -669,7 +669,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "missing);");
         line(source, "                }");
         line(source, "            }");
-        line(source, "            throw new java.lang.IllegalArgumentException(" 
+        line(source, "            throw new java.lang.IllegalArgumentException("
                 + "\"Required Hardwood column '\" + name + \"' is missing\", "
                 + "missing);");
         line(source, "        }");
@@ -687,14 +687,14 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "|| schema.maxRepetitionLevel() != 0");
         line(source, "                || schema.repetitionType() == "
                 + "dev.hardwood.metadata.RepetitionType.REPEATED) {");
-        line(source, "            throw new java.lang.IllegalArgumentException(" 
+        line(source, "            throw new java.lang.IllegalArgumentException("
                 + "\"Hardwood column '\" + name + \"' is nested or repeated "
                 + "(path \" + schema.fieldPath() + \"); only flat, "
                 + "non-repeated columns are supported\");");
         line(source, "        }");
         line(source, "        if (primitive && schema.repetitionType() != "
                 + "dev.hardwood.metadata.RepetitionType.REQUIRED) {");
-        line(source, "            throw new java.lang.IllegalArgumentException(" 
+        line(source, "            throw new java.lang.IllegalArgumentException("
                 + "\"Primitive projection column '\" + name + \"' requires "
                 + "a REQUIRED Parquet column, but it is \" + "
                 + "schema.repetitionType());");
@@ -705,14 +705,19 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "            String expected = second == null");
         line(source, "                    ? first.toString()");
         line(source, "                    : first + \" or \" + second;");
-        line(source, "            throw new java.lang.IllegalArgumentException(" 
+        line(source, "            throw new java.lang.IllegalArgumentException("
                 + "\"Hardwood column '\" + name + \"' has physical type \" "
                 + "+ schema.type() + \"; expected \" + expected);");
         line(source, "        }");
         line(source, "    }");
     }
 
-    private void reportMissingColumnarProcessor() {
+    private void reportMissingColumnarProcessor(
+            RoundEnvironment roundEnvironment) {
+        if (roundEnvironment.errorRaised()) {
+            pending.clear();
+            return;
+        }
         for (PendingSchema pendingSchema : pending.values()) {
             error(pendingSchema.schema,
                     "Columnar Projection Store's annotation processor did "
