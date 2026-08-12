@@ -1,5 +1,7 @@
 # columnar-projection-store-hardwood
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.j-util/columnar-projection-store-hardwood.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store-hardwood)
+
 Generate schema-specific loaders that transfer Hardwood column batches
 directly into [Columnar Projection Store](https://github.com/j-util/columnar-projection-store)
 without row objects, runtime reflection, dynamic proxies, or per-row
