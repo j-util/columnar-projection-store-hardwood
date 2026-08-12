@@ -482,7 +482,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "batch ranges into a generated store, and seals the store "
                 + "after successful exhaustion. Hardwood's column API is "
                 + "experimental, so this generated integration is tied to "
-                + "Hardwood 1.0.0.Final.");
+                + "Hardwood 1.1.0-SNAPSHOT.");
         line(source, " */");
         line(source, "@javax.annotation.processing.Generated(\""
                 + PROCESSOR_NAME + "\")");
@@ -537,18 +537,20 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "     *");
         line(source, "     * <p>This method closes only the projected {@code "
                 + "ColumnReaders} it creates. It never closes {@code reader}. "
-                + "For a single-file reader, that file's complete row count "
-                + "is used as an initial-capacity hint. For a multi-file "
-                + "reader, Hardwood exposes the first file's metadata, so "
-                + "that file's row count is used as the hint while later "
-                + "files remain lazily opened by Hardwood.");
+                + "Before allocating the store, it reads every file footer "
+                + "and exactly sums their row counts. Hardwood caches those "
+                + "footers for reuse while materializing the files in their "
+                + "supplied order.");
         line(source, "     *");
         line(source, "     * @param reader the caller-owned Parquet reader");
         line(source, "     * @return a sealed generated store");
         line(source, "     * @throws java.lang.NullPointerException if {@code "
                 + "reader} is null");
         line(source, "     * @throws java.lang.ArithmeticException if the "
-                + "first file's row count does not fit in an {@code int}");
+                + "combined row count overflows a {@code long} or does not fit "
+                + "in an {@code int}");
+        line(source, "     * @throws java.io.UncheckedIOException if an indexed "
+                + "file-metadata read fails");
         line(source, "     * @throws java.lang.IllegalArgumentException if the "
                 + "Hardwood schema does not match this projection");
         line(source, "     */");
@@ -556,8 +558,22 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + " load(dev.hardwood.reader.ParquetFileReader reader) {");
         line(source, "        java.util.Objects.requireNonNull(reader, "
                 + "\"reader\");");
-        line(source, "        int expectedSize = java.lang.Math.toIntExact(");
-        line(source, "                reader.getFileMetaData().numRows());");
+        line(source, "        int fileCount = reader.getFileCount();");
+        line(source, "        long totalRowCount = 0L;");
+        line(source, "        try {");
+        line(source, "            for (int fileIndex = 0; fileIndex < fileCount; "
+                + "fileIndex++) {");
+        line(source, "                totalRowCount = java.lang.Math.addExact(");
+        line(source, "                        totalRowCount,");
+        line(source, "                        reader.getFileMetaData(fileIndex)."
+                + "numRows());");
+        line(source, "            }");
+        line(source, "        } catch (java.io.IOException exception) {");
+        line(source, "            throw new java.io.UncheckedIOException("
+                + "exception);");
+        line(source, "        }");
+        line(source, "        int expectedSize = java.lang.Math.toIntExact("
+                + "totalRowCount);");
         line(source, "        try (dev.hardwood.reader.ColumnReaders columns "
                 + "= reader.buildColumnReaders(projection()).build()) {");
         line(source, "            return load(columns, expectedSize);");

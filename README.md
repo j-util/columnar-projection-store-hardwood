@@ -130,16 +130,17 @@ try (var columns = reader
 - `load(ParquetFileReader)` requires a non-null reader, creates the projected
   `ColumnReaders`, and closes only those created column readers. It never
   closes the caller's `ParquetFileReader`.
-- For a single file, that overload uses the file's complete row count as its
-  initial-capacity hint. For a multi-file reader, Hardwood exposes only the
-  first file's metadata, so the overload uses the first file's row count as a
-  hint; later files remain lazily opened by Hardwood and the store grows as
-  needed. A first-file row count outside the `int` range causes
-  `ArithmeticException`.
+- Before allocating, that overload reads every supplied file's footer in order
+  and uses the exact combined row count as the initial capacity. Hardwood
+  caches those footers for reuse while materializing every file in the same
+  supplied order. A combined total that overflows `long`, or that cannot be
+  represented by `int`, causes `ArithmeticException`. An indexed footer-read
+  failure is translated from `IOException` to `UncheckedIOException`, with the
+  original exception preserved as its cause.
 - `load(ColumnReaders, int)` never closes the caller's `ColumnReaders`. It
   consumes them to exhaustion. A negative capacity hint is rejected before
-  input is advanced. Clients that know or estimate the combined size of a
-  multi-file input can pass it through this existing explicit-capacity path.
+  input is advanced. The explicit capacity remains available for callers that
+  configure filters, batches, or row-group selection themselves.
 - All column mappings are validated before the first batch is advanced. Every
   Hardwood batch is appended through the generated common-range batch API
   using `[0, recordCount)`; array capacity beyond the logical row count is
@@ -201,6 +202,14 @@ recommends `--enable-native-access=ALL-UNNAMED` when enabling that acceleration.
 Add the option to the application JVM to authorize the native access and avoid
 the warning. It is not required merely because the warning appears when
 execution otherwise continues.
+
+## Development from main
+
+The current `main` branch is version `1.1.0-SNAPSHOT` and requires the
+unpublished Hardwood core `1.1.0-SNAPSHOT` to be installed in the local Maven
+repository. This development dependency includes indexed, cached footer access
+for multi-file readers. The normal consumer installation example above remains
+on the published `1.0.0` integration and Hardwood `1.0.0.Final`.
 
 ## Build and tests
 

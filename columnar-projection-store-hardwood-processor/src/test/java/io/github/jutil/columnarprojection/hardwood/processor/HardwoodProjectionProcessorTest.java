@@ -1,13 +1,20 @@
 package io.github.jutil.columnarprojection.hardwood.processor;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.jutil.columnarprojection.processor.ProjectionSchemaProcessor;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import javax.annotation.processing.Processor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -64,10 +71,20 @@ class HardwoodProjectionProcessorTest {
         assertFalse(generated.contains("java.lang.reflect"), generated);
         assertFalse(generated.contains("Class.forName"), generated);
         assertTrue(generated.contains(
-                "int expectedSize = java.lang.Math.toIntExact(\n"
-                        + "                reader.getFileMetaData().numRows());"),
+                "int fileCount = reader.getFileCount();"), generated);
+        assertTrue(generated.contains(
+                "for (int fileIndex = 0; fileIndex < fileCount; fileIndex++)"),
                 generated);
-        assertFalse(generated.contains("reader.isMultiFile()"), generated);
+        assertTrue(generated.contains(
+                "reader.getFileMetaData(fileIndex).numRows()"), generated);
+        assertTrue(generated.contains("java.lang.Math.addExact("), generated);
+        assertTrue(generated.contains("java.lang.Math.toIntExact("), generated);
+        assertFalse(generated.contains("reader.getFileMetaData()"), generated);
+        assertTrue(generated.contains(
+                "catch (java.io.IOException exception)"), generated);
+        assertTrue(generated.contains(
+                "throw new java.io.UncheckedIOException(exception);"),
+                generated);
         assertTrue(generated.contains(
                 "load(dev.hardwood.reader.ColumnReaders readers, "
                         + "int expectedSize)"),
@@ -80,6 +97,36 @@ class HardwoodProjectionProcessorTest {
                 || generated.contains("batch.id(column1.getLongs())")
                 || generated.contains("batch.id(column2.getLongs())"),
                 generated);
+
+        try (URLClassLoader classLoader = compilation.classLoader()) {
+            Class<?> loader = classLoader.loadClass(
+                    "example.PriceProjectionHardwoodLoader");
+            Class<?> store = classLoader.loadClass("example.PriceProjectionStore");
+            Method projection = loader.getMethod("projection");
+            Method readerLoad = loader.getMethod(
+                    "load", dev.hardwood.reader.ParquetFileReader.class);
+            Method advancedLoad = loader.getMethod(
+                    "load", dev.hardwood.reader.ColumnReaders.class, int.class);
+
+            assertEquals(dev.hardwood.schema.ColumnProjection.class,
+                    projection.getReturnType());
+            assertEquals(store, readerLoad.getReturnType());
+            assertEquals(store, advancedLoad.getReturnType());
+            assertEquals(0, readerLoad.getExceptionTypes().length,
+                    "load(ParquetFileReader) must not declare an exception");
+            assertEquals(0, advancedLoad.getExceptionTypes().length);
+
+            Set<String> publicSignatures = Arrays.stream(
+                            loader.getDeclaredMethods())
+                    .filter(method -> Modifier.isPublic(method.getModifiers()))
+                    .map(HardwoodProjectionProcessorTest::signature)
+                    .collect(Collectors.toSet());
+            assertEquals(Set.of(
+                    "projection()",
+                    "load(dev.hardwood.reader.ParquetFileReader)",
+                    "load(dev.hardwood.reader.ColumnReaders,int)"),
+                    publicSignatures);
+        }
     }
 
     @Test
@@ -308,5 +355,11 @@ class HardwoodProjectionProcessorTest {
                 ? List.of(hardwood, columnar)
                 : List.of(columnar, hardwood);
         return CompilerTestSupport.compile(root, sources, processors);
+    }
+
+    private static String signature(Method method) {
+        return method.getName() + Arrays.stream(method.getParameterTypes())
+                .map(Class::getName)
+                .collect(Collectors.joining(",", "(", ")"));
     }
 }

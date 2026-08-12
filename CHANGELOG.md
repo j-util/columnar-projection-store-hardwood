@@ -2,6 +2,17 @@
 
 All notable user-visible changes are documented in this file.
 
+## 1.1.0 - Unreleased
+
+### Changed
+
+- Convenience loading now reads and exactly sums every supplied file's cached
+  footer before allocating, so ordered multi-file materialization starts with
+  the combined row-count capacity instead of the first file's row-count hint.
+- Indexed footer-read failures are exposed as `UncheckedIOException` without
+  adding a checked exception to the generated loader API; combined row-count
+  overflow is reported as `ArithmeticException`.
+
 ## 1.0.0 - 2026-08-12
 
 ### Added

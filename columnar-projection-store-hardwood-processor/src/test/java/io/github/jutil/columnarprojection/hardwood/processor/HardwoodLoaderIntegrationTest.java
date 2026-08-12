@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,6 +16,8 @@ import io.github.jutil.columnarprojection.ProjectionStore;
 import io.github.jutil.columnarprojection.processor.ProjectionSchemaProcessor;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URLClassLoader;
@@ -200,34 +203,36 @@ class HardwoodLoaderIntegrationTest {
                 "example.IntProjectionHardwoodLoader", parquet);
 
         assertIntValues(store, 7, 8, 9);
+        assertEquals(3, capacity(store));
     }
 
     @Test
-    void multiFileConvenienceLoadGrowsPastFirstFileHintAndPreservesOrder()
+    void multiFileConvenienceLoadUsesCombinedCapacityAndPreservesOrder()
             throws Exception {
         Path first = temporaryDirectory.resolve("multi-first.parquet");
         Path second = temporaryDirectory.resolve("multi-second.parquet");
-        writeInts(first, 10);
-        writeInts(second, 20, 21, 22);
+        writeInts(first, 10, 11, 12, 13);
+        writeInts(second, 20);
 
         Class<?> loader = generatedClassLoader.loadClass(
                 "example.IntProjectionHardwoodLoader");
         try (ParquetFileReader reader = ParquetFileReader.openAll(List.of(
                 InputFile.of(first), InputFile.of(second)))) {
             assertTrue(reader.isMultiFile());
-            assertEquals(1, reader.getFileMetaData().numRows(),
-                    "Hardwood exposes the first file's row count");
+            assertEquals(2, reader.getFileCount());
 
             ProjectionStore<?> store = (ProjectionStore<?>) loader
                     .getMethod("load", ParquetFileReader.class)
                     .invoke(null, reader);
 
-            assertIntValues(store, 10, 20, 21, 22);
+            assertIntValues(store, 10, 11, 12, 13, 20);
+            assertEquals(5, capacity(store),
+                    "exact combined sizing avoids growth from 4 to 7");
         }
     }
 
     @Test
-    void multiFileConvenienceLoadGrowsFromEmptyFirstFileAndPreservesOrder()
+    void multiFileConvenienceLoadUsesSecondFileCapacityAfterEmptyFirst()
             throws Exception {
         Path first = temporaryDirectory.resolve("multi-empty-first.parquet");
         Path second = temporaryDirectory.resolve("multi-after-empty.parquet");
@@ -238,14 +243,38 @@ class HardwoodLoaderIntegrationTest {
                 "example.IntProjectionHardwoodLoader");
         try (ParquetFileReader reader = ParquetFileReader.openAll(List.of(
                 InputFile.of(first), InputFile.of(second)))) {
-            assertEquals(0, reader.getFileMetaData().numRows(),
-                    "Hardwood exposes the empty first file's row count");
-
             ProjectionStore<?> store = (ProjectionStore<?>) loader
                     .getMethod("load", ParquetFileReader.class)
                     .invoke(null, reader);
 
             assertIntValues(store, 30, 31, 32);
+            assertEquals(3, capacity(store));
+        }
+    }
+
+    @Test
+    void laterMetadataFailureBecomesUncheckedIOExceptionWithOriginalCause()
+            throws Exception {
+        Path first = temporaryDirectory.resolve("metadata-first.parquet");
+        Path second = temporaryDirectory.resolve("metadata-failing.parquet");
+        writeInts(first, 40);
+        writeInts(second, 50);
+        IOException original = new IOException("later metadata failure");
+        InputFile failing = new MetadataFailingInputFile(
+                InputFile.of(second), original);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+
+        try (ParquetFileReader reader = ParquetFileReader.openAll(List.of(
+                InputFile.of(first), failing))) {
+            InvocationTargetException invocation = assertThrows(
+                    InvocationTargetException.class,
+                    () -> loader.getMethod("load", ParquetFileReader.class)
+                            .invoke(null, reader));
+
+            UncheckedIOException failure = assertInstanceOf(
+                    UncheckedIOException.class, invocation.getCause());
+            assertSame(original, failure.getCause());
         }
     }
 
@@ -486,6 +515,12 @@ class HardwoodLoaderIntegrationTest {
         return messages.toString();
     }
 
+    private static int capacity(ProjectionStore<?> store) throws Exception {
+        Field capacity = store.getClass().getDeclaredField("capacity");
+        capacity.setAccessible(true);
+        return capacity.getInt(store);
+    }
+
     private static void writeAllMappings(Path path, int rowCount)
             throws IOException {
         List<Row> rows = new java.util.ArrayList<>();
@@ -546,6 +581,37 @@ class HardwoodLoaderIntegrationTest {
     @FunctionalInterface
     private interface Row {
         void populate(Group group);
+    }
+
+    private record MetadataFailingInputFile(
+            InputFile delegate,
+            IOException failure) implements InputFile {
+
+        @Override
+        public void open() throws IOException {
+            delegate.open();
+        }
+
+        @Override
+        public java.nio.ByteBuffer readRange(long offset, int length)
+                throws IOException {
+            throw failure;
+        }
+
+        @Override
+        public long length() throws IOException {
+            return delegate.length();
+        }
+
+        @Override
+        public String name() {
+            return delegate.name();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
     }
 
     private record NioOutputFile(Path path) implements OutputFile {
