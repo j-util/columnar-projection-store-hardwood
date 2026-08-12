@@ -2,7 +2,7 @@
 
 All notable user-visible changes are documented in this file.
 
-## 0.1.0 - Unreleased
+## 1.0.0 - 2026-08-12
 
 ### Added
 
@@ -14,5 +14,7 @@ All notable user-visible changes are documented in this file.
   binary values, including nullable reference columns.
 - Pre-read validation for missing, nested, repeated, nullable primitive, and
   physically incompatible columns.
+- Ordered single-file and multi-file materialization with capacity growth from
+  the first file's row-count hint, including empty first files.
 - Maven Central-ready metadata, release configuration, Maven Wrapper, Java 21
   baseline, Java 21/26 CI, documentation, and end-to-end Parquet tests.

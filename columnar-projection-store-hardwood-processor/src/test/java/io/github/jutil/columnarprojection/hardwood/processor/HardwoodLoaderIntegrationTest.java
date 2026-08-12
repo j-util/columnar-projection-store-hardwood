@@ -227,6 +227,29 @@ class HardwoodLoaderIntegrationTest {
     }
 
     @Test
+    void multiFileConvenienceLoadGrowsFromEmptyFirstFileAndPreservesOrder()
+            throws Exception {
+        Path first = temporaryDirectory.resolve("multi-empty-first.parquet");
+        Path second = temporaryDirectory.resolve("multi-after-empty.parquet");
+        writeInts(first);
+        writeInts(second, 30, 31, 32);
+
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        try (ParquetFileReader reader = ParquetFileReader.openAll(List.of(
+                InputFile.of(first), InputFile.of(second)))) {
+            assertEquals(0, reader.getFileMetaData().numRows(),
+                    "Hardwood exposes the empty first file's row count");
+
+            ProjectionStore<?> store = (ProjectionStore<?>) loader
+                    .getMethod("load", ParquetFileReader.class)
+                    .invoke(null, reader);
+
+            assertIntValues(store, 30, 31, 32);
+        }
+    }
+
+    @Test
     void negativeExpectedSizeDoesNotConsumeCallerReaders() throws Exception {
         Path parquet = temporaryDirectory.resolve("negative-size.parquet");
         writeAllMappings(parquet, 5);

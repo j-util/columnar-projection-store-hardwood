@@ -8,9 +8,7 @@ without row objects, runtime reflection, dynamic proxies, or per-row
 This is an independent j-util integration. It is not affiliated with or
 endorsed by the Hardwood project or its maintainers.
 
-The project requires Java 21 or newer. Version `0.1.0` is unreleased; when
-building from this repository, use `0.1.0-SNAPSHOT` after running
-`./mvnw install` locally.
+The project requires Java 21 or newer. The initial release is `1.0.0`.
 
 ## Installation
 
@@ -20,7 +18,7 @@ Add the runtime artifact and configure both annotation processors explicitly:
 <properties>
     <maven.compiler.release>21</maven.compiler.release>
     <columnar-projection-store.version>1.2.0</columnar-projection-store.version>
-    <columnar-projection-store-hardwood.version>0.1.0-SNAPSHOT</columnar-projection-store-hardwood.version>
+    <columnar-projection-store-hardwood.version>1.0.0</columnar-projection-store-hardwood.version>
 </properties>
 
 <dependencies>
@@ -174,7 +172,7 @@ null elements are preserved.
 
 ## Limitations and compatibility
 
-The `0.1.x` line targets exactly:
+Version `1.0.0` targets exactly:
 
 - Columnar Projection Store `1.2.0`;
 - Hardwood core `1.0.0.Final`;
@@ -183,7 +181,7 @@ The `0.1.x` line targets exactly:
 Only flat, non-repeated columns are supported. Nested structures, repeated
 columns, boxed primitives, column-name remapping, logical-type conversions,
 loader-owned filters, writes, and arbitrary projection return types are
-outside the `0.1` scope. Accessor names are used verbatim as Hardwood column
+outside the `1.0` scope. Accessor names are used verbatim as Hardwood column
 names.
 
 Hardwood marks its column-reader and validity APIs experimental. Generated
