@@ -48,6 +48,21 @@ class HardwoodProjectionProcessorTest {
                             dev.hardwood.reader.ParquetFileReader reader) {
                         return PriceProjectionHardwoodLoader.load(reader);
                     }
+
+                    static PriceProjectionStore load(
+                            dev.hardwood.reader.ParquetFileReader reader,
+                            java.util.concurrent.Executor executor) {
+                        return PriceProjectionHardwoodLoader.load(
+                                reader, executor);
+                    }
+
+                    static PriceProjectionStore load(
+                            dev.hardwood.reader.ColumnReaders readers,
+                            int expectedSize,
+                            java.util.concurrent.Executor executor) {
+                        return PriceProjectionHardwoodLoader.load(
+                                readers, expectedSize, executor);
+                    }
                 }
                 """);
 
@@ -93,6 +108,22 @@ class HardwoodProjectionProcessorTest {
                 "new example.PriceProjection__ColumnarProjectionStore("
                         + "expectedSize)"),
                 generated);
+        assertTrue(generated.contains(
+                "example.PriceProjectionStore.create(expectedSize, executor)"),
+                generated);
+        assertTrue(generated.contains(
+                "load(dev.hardwood.reader.ParquetFileReader reader, "
+                        + "java.util.concurrent.Executor executor)"),
+                generated);
+        assertTrue(generated.contains(
+                "load(dev.hardwood.reader.ColumnReaders readers, "
+                        + "int expectedSize, "
+                        + "java.util.concurrent.Executor executor)"),
+                generated);
+        assertFalse(generated.contains("java.util.concurrent.Executors"),
+                generated);
+        assertFalse(generated.contains(".shutdown("), generated);
+        assertFalse(generated.contains(".shutdownNow("), generated);
         assertTrue(generated.contains("batch.id(column0.getLongs())")
                 || generated.contains("batch.id(column1.getLongs())")
                 || generated.contains("batch.id(column2.getLongs())"),
@@ -107,14 +138,27 @@ class HardwoodProjectionProcessorTest {
                     "load", dev.hardwood.reader.ParquetFileReader.class);
             Method advancedLoad = loader.getMethod(
                     "load", dev.hardwood.reader.ColumnReaders.class, int.class);
+            Method executorReaderLoad = loader.getMethod(
+                    "load",
+                    dev.hardwood.reader.ParquetFileReader.class,
+                    java.util.concurrent.Executor.class);
+            Method executorAdvancedLoad = loader.getMethod(
+                    "load",
+                    dev.hardwood.reader.ColumnReaders.class,
+                    int.class,
+                    java.util.concurrent.Executor.class);
 
             assertEquals(dev.hardwood.schema.ColumnProjection.class,
                     projection.getReturnType());
             assertEquals(store, readerLoad.getReturnType());
             assertEquals(store, advancedLoad.getReturnType());
+            assertEquals(store, executorReaderLoad.getReturnType());
+            assertEquals(store, executorAdvancedLoad.getReturnType());
             assertEquals(0, readerLoad.getExceptionTypes().length,
                     "load(ParquetFileReader) must not declare an exception");
             assertEquals(0, advancedLoad.getExceptionTypes().length);
+            assertEquals(0, executorReaderLoad.getExceptionTypes().length);
+            assertEquals(0, executorAdvancedLoad.getExceptionTypes().length);
 
             Set<String> publicSignatures = Arrays.stream(
                             loader.getDeclaredMethods())
@@ -124,7 +168,11 @@ class HardwoodProjectionProcessorTest {
             assertEquals(Set.of(
                     "projection()",
                     "load(dev.hardwood.reader.ParquetFileReader)",
-                    "load(dev.hardwood.reader.ColumnReaders,int)"),
+                    "load(dev.hardwood.reader.ParquetFileReader,"
+                            + "java.util.concurrent.Executor)",
+                    "load(dev.hardwood.reader.ColumnReaders,int)",
+                    "load(dev.hardwood.reader.ColumnReaders,int,"
+                            + "java.util.concurrent.Executor)"),
                     publicSignatures);
         }
     }
@@ -258,7 +306,7 @@ class HardwoodProjectionProcessorTest {
 
         assertFalse(compilation.successful(), compilation.messages());
         assertTrue(compilation.messages().contains(
-                "columnar-projection-store-processor:1.2.0"),
+                "columnar-projection-store-processor:1.3.0"),
                 compilation.messages());
         assertTrue(compilation.messages().contains(
                 "annotation processor path"), compilation.messages());

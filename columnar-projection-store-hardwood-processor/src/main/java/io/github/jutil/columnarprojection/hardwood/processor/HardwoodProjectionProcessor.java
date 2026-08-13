@@ -38,7 +38,7 @@ import javax.tools.JavaFileObject;
  * Generates direct Hardwood-to-store loaders for interfaces annotated with
  * {@code HardwoodProjection}.
  *
- * <p>The processor deliberately waits for Columnar Projection Store's 1.2.0
+ * <p>The processor deliberately waits for Columnar Projection Store's 1.3.0
  * processor to generate its concrete implementation and public store and
  * batch contracts. It then inspects those contracts, so collision-safe names
  * and effective inherited or covariant accessors remain owned by the columnar
@@ -225,6 +225,17 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                             + "constructor(int expectedSize)");
             return GenerationResult.FAILED;
         }
+        if (!hasExecutorFactory(storeType)) {
+            error(pendingSchema.schema,
+                    "The generated store contract "
+                            + ((TypeElement) storeType.asElement())
+                                    .getQualifiedName()
+                            + " does not expose the required static "
+                            + "create(int expectedSize, Executor executor) "
+                            + "factory; use columnar-projection-store-"
+                            + "processor 1.3.0 or newer");
+            return GenerationResult.FAILED;
+        }
 
         List<ColumnBinding> columns = inspectBatchColumns(
                 pendingSchema.schema, batchType);
@@ -351,6 +362,37 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                     && constructor.getParameters().size() == 1
                     && constructor.getParameters().get(0).asType().getKind()
                             == TypeKind.INT) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasExecutorFactory(DeclaredType storeType) {
+        TypeElement storeElement = (TypeElement) storeType.asElement();
+        TypeElement executor = elements.getTypeElement(
+                "java.util.concurrent.Executor");
+        if (executor == null) {
+            return false;
+        }
+        for (ExecutableElement method : ElementFilter.methodsIn(
+                storeElement.getEnclosedElements())) {
+            if (!method.getSimpleName().contentEquals("create")
+                    || !method.getModifiers().contains(Modifier.STATIC)
+                    || method.getParameters().size() != 2) {
+                continue;
+            }
+            List<? extends TypeMirror> parameters = method.getParameters()
+                    .stream()
+                    .map(parameter -> parameter.asType())
+                    .toList();
+            if (parameters.get(0).getKind() == TypeKind.INT
+                    && types.isSameType(
+                            types.erasure(parameters.get(1)),
+                            types.erasure(executor.asType()))
+                    && types.isAssignable(
+                            types.erasure(method.getReturnType()),
+                            types.erasure(storeType))) {
                 return true;
             }
         }
@@ -494,8 +536,8 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "    }");
         line(source, "");
         appendProjectionMethod(source, columns);
-        appendReaderLoadMethod(source, storeName);
-        appendAdvancedLoadMethod(
+        appendReaderLoadMethods(source, storeName);
+        appendAdvancedLoadMethods(
                 source,
                 storeName,
                 implementationName,
@@ -529,7 +571,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "");
     }
 
-    private void appendReaderLoadMethod(
+    private void appendReaderLoadMethods(
             StringBuilder source, String storeName) {
         line(source, "    /**");
         line(source, "     * Reads and materializes the requested columns from "
@@ -558,6 +600,73 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + " load(dev.hardwood.reader.ParquetFileReader reader) {");
         line(source, "        java.util.Objects.requireNonNull(reader, "
                 + "\"reader\");");
+        line(source, "        int expectedSize = expectedSize(reader);");
+        line(source, "        try (dev.hardwood.reader.ColumnReaders columns "
+                + "= reader.buildColumnReaders(projection()).build()) {");
+        line(source, "            return load(columns, expectedSize);");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    /**");
+        line(source, "     * Reads and materializes the requested columns, "
+                + "copying each batch's destination columns through a "
+                + "caller-owned executor.");
+        line(source, "     *");
+        line(source, "     * <p>This overload preserves Hardwood's single-"
+                + "threaded cursor: it advances the reader and obtains each "
+                + "batch array on the calling thread. Only independent "
+                + "copies into the generated store are submitted to {@code "
+                + "executor}, and one batch completes before the next is "
+                + "advanced. This method closes only the projected {@code "
+                + "ColumnReaders} it creates; it never closes {@code reader} "
+                + "or shuts down {@code executor}.");
+        line(source, "     * The executor must remain able to execute accepted "
+                + "work until this method returns; invoking the loader from "
+                + "the same saturated bounded executor can cause thread "
+                + "starvation.");
+        line(source, "     *");
+        line(source, "     * @param reader the caller-owned Parquet reader");
+        line(source, "     * @param executor the caller-owned executor used "
+                + "for destination-column copies");
+        line(source, "     * @return a sealed generated store");
+        line(source, "     * @throws java.lang.NullPointerException if either "
+                + "argument is null");
+        line(source, "     * @throws java.lang.ArithmeticException if the "
+                + "combined row count overflows a {@code long} or does not fit "
+                + "in an {@code int}");
+        line(source, "     * @throws java.io.UncheckedIOException if an indexed "
+                + "file-metadata read fails");
+        line(source, "     * @throws java.lang.IllegalArgumentException if the "
+                + "Hardwood schema does not match this projection");
+        line(source, "     * @throws java.util.concurrent.CancellationException "
+                + "if the loading thread is interrupted");
+        line(source, "     */");
+        line(source, "    public static " + storeName
+                + " load(dev.hardwood.reader.ParquetFileReader reader, "
+                + "java.util.concurrent.Executor executor) {");
+        line(source, "        java.util.Objects.requireNonNull(reader, "
+                + "\"reader\");");
+        line(source, "        java.util.Objects.requireNonNull(executor, "
+                + "\"executor\");");
+        line(source, "        requireNotInterrupted();");
+        line(source, "        int expectedSize = expectedSize(reader);");
+        line(source, "        dev.hardwood.reader.ColumnReaders columns = "
+                + "reader.buildColumnReaders(projection()).build();");
+        line(source, "        java.lang.Throwable failure = null;");
+        line(source, "        try {");
+        line(source, "            return load(columns, expectedSize, executor);");
+        line(source, "        } catch (java.lang.RuntimeException "
+                + "| java.lang.Error exception) {");
+        line(source, "            failure = exception;");
+        line(source, "            throw exception;");
+        line(source, "        } finally {");
+        line(source, "            closeReadersPreservingInterrupt("
+                + "columns, failure);");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static int expectedSize(");
+        line(source, "            dev.hardwood.reader.ParquetFileReader reader) {");
         line(source, "        int fileCount = reader.getFileCount();");
         line(source, "        long totalRowCount = 0L;");
         line(source, "        try {");
@@ -572,17 +681,12 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "            throw new java.io.UncheckedIOException("
                 + "exception);");
         line(source, "        }");
-        line(source, "        int expectedSize = java.lang.Math.toIntExact("
-                + "totalRowCount);");
-        line(source, "        try (dev.hardwood.reader.ColumnReaders columns "
-                + "= reader.buildColumnReaders(projection()).build()) {");
-        line(source, "            return load(columns, expectedSize);");
-        line(source, "        }");
+        line(source, "        return java.lang.Math.toIntExact(totalRowCount);");
         line(source, "    }");
         line(source, "");
     }
 
-    private void appendAdvancedLoadMethod(
+    private void appendAdvancedLoadMethods(
             StringBuilder source,
             String storeName,
             String implementationName,
@@ -653,9 +757,130 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "        return store;");
         line(source, "    }");
         line(source, "");
+        line(source, "    /**");
+        line(source, "     * Consumes caller-configured aligned column readers "
+                + "and copies each batch's destination columns through a "
+                + "caller-owned executor.");
+        line(source, "     *");
+        line(source, "     * <p>The caller retains ownership of both {@code "
+                + "readers} and {@code executor}; this method closes neither. "
+                + "It advances readers and invokes their typed accessors only "
+                + "on the calling thread. A batch append submits one "
+                + "destination-array copy per projection column and waits for "
+                + "all accepted work before the next input batch is advanced. "
+                + "Every mapping is validated before the first advance.");
+        line(source, "     * The executor must remain able to execute accepted "
+                + "work until this method returns; invoking the loader from "
+                + "the same saturated bounded executor can cause thread "
+                + "starvation.");
+        line(source, "     *");
+        line(source, "     * @param readers caller-owned projected column "
+                + "readers");
+        line(source, "     * @param expectedSize initial-capacity hint, or zero "
+                + "when unknown");
+        line(source, "     * @param executor caller-owned executor for "
+                + "destination-column copies");
+        line(source, "     * @return a sealed generated store");
+        line(source, "     * @throws java.lang.NullPointerException if {@code "
+                + "readers} or {@code executor} is null");
+        line(source, "     * @throws java.lang.IllegalArgumentException if "
+                + "{@code expectedSize} is negative or a column mapping is "
+                + "invalid");
+        line(source, "     * @throws java.util.concurrent.CancellationException "
+                + "if the loading thread is interrupted");
+        line(source, "     */");
+        line(source, "    public static " + storeName
+                + " load(dev.hardwood.reader.ColumnReaders readers, "
+                + "int expectedSize, "
+                + "java.util.concurrent.Executor executor) {");
+        line(source, "        java.util.Objects.requireNonNull(readers, "
+                + "\"readers\");");
+        line(source, "        java.util.Objects.requireNonNull(executor, "
+                + "\"executor\");");
+        line(source, "        if (expectedSize < 0) {");
+        line(source, "            throw new java.lang.IllegalArgumentException("
+                + "\"expectedSize must be greater than or equal to zero: \" "
+                + "+ expectedSize);");
+        line(source, "        }");
+        line(source, "        requireNotInterrupted();");
+        for (int index = 0; index < columns.size(); index++) {
+            ColumnBinding column = columns.get(index);
+            line(source, "        dev.hardwood.reader.ColumnReader column"
+                    + index + " = requireColumn(readers, \""
+                    + escape(column.name) + "\");");
+            String secondPhysicalType = column.mapping.secondPhysicalType == null
+                    ? "null"
+                    : "dev.hardwood.metadata.PhysicalType."
+                            + column.mapping.secondPhysicalType;
+            line(source, "        validateColumn(column" + index + ", \""
+                    + escape(column.name) + "\", "
+                    + "dev.hardwood.metadata.PhysicalType."
+                    + column.mapping.firstPhysicalType + ", "
+                    + secondPhysicalType + ", "
+                    + column.mapping.primitive + ");");
+        }
+        line(source, "");
+        line(source, "        " + storeName + " store = " + storeName
+                + ".create(expectedSize, executor);");
+        line(source, "        while (true) {");
+        line(source, "            requireNotInterrupted();");
+        line(source, "            boolean batchAvailable = readers.nextBatch();");
+        line(source, "            requireNotInterrupted();");
+        line(source, "            if (!batchAvailable) {");
+        line(source, "                break;");
+        line(source, "            }");
+        line(source, "            int recordCount = readers.getRecordCount();");
+        line(source, "            " + batchName
+                + " batch = store.batch(0, recordCount);");
+        for (int index = 0; index < columns.size(); index++) {
+            ColumnBinding column = columns.get(index);
+            line(source, "            batch." + column.name + "(column"
+                    + index + "." + column.mapping.readerAccessor + "());");
+        }
+        line(source, "            requireNotInterrupted();");
+        line(source, "            batch.append();");
+        line(source, "            requireNotInterrupted();");
+        line(source, "        }");
+        line(source, "        requireNotInterrupted();");
+        line(source, "        store.seal();");
+        line(source, "        return store;");
+        line(source, "    }");
+        line(source, "");
     }
 
     private void appendValidationHelpers(StringBuilder source) {
+        line(source, "    private static void requireNotInterrupted() {");
+        line(source, "        if (java.lang.Thread.currentThread()."
+                + "isInterrupted()) {");
+        line(source, "            throw new java.util.concurrent."
+                + "CancellationException(\"Hardwood load interrupted\");");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static void closeReadersPreservingInterrupt(");
+        line(source, "            dev.hardwood.reader.ColumnReaders readers,");
+        line(source, "            java.lang.Throwable priorFailure) {");
+        line(source, "        boolean interrupted = "
+                + "java.lang.Thread.interrupted();");
+        line(source, "        try {");
+        line(source, "            readers.close();");
+        line(source, "        } catch (java.lang.RuntimeException "
+                + "| java.lang.Error closeFailure) {");
+        line(source, "            if (priorFailure == null) {");
+        line(source, "                throw closeFailure;");
+        line(source, "            }");
+        line(source, "            if (closeFailure != priorFailure) {");
+        line(source, "                priorFailure.addSuppressed("
+                + "closeFailure);");
+        line(source, "            }");
+        line(source, "        } finally {");
+        line(source, "            if (interrupted) {");
+        line(source, "                java.lang.Thread.currentThread()."
+                + "interrupt();");
+        line(source, "            }");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
         line(source, "    private static dev.hardwood.reader.ColumnReader "
                 + "requireColumn(dev.hardwood.reader.ColumnReaders readers, "
                 + "String name) {");
@@ -736,7 +961,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                             + "not generate the store contract required for "
                             + pendingSchema.schema.getQualifiedName()
                             + ". Add io.github.j-util:"
-                            + "columnar-projection-store-processor:1.2.0 "
+                            + "columnar-projection-store-processor:1.3.0 "
                             + "alongside columnar-projection-store-hardwood-"
                             + "processor on the compiler's annotation "
                             + "processor path, then clean and recompile.");

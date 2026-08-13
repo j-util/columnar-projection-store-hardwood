@@ -2,8 +2,10 @@ package io.github.jutil.columnarprojection.hardwood.processor;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,6 +30,17 @@ import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroup;
 import org.apache.parquet.hadoop.ParquetWriter;
@@ -179,6 +192,247 @@ class HardwoodLoaderIntegrationTest {
                     : new byte[]{7, 8, (byte) row};
             assertArrayEquals(expectedFixed,
                     (byte[]) invoke(projection, view, "fixedBlob"));
+        }
+    }
+
+    @Test
+    void executorLoadSubmitsOneCopyPerColumnPerPositiveBatch()
+            throws Exception {
+        Path parquet = temporaryDirectory.resolve("executor-batches.parquet");
+        writeAllMappings(parquet, 5);
+        CountingDirectExecutor executor = new CountingDirectExecutor();
+
+        ProjectionStore<?> store = loadAdvanced(
+                "example.AllMappingsHardwoodLoader",
+                parquet,
+                2,
+                0,
+                executor);
+
+        assertEquals(27, executor.submissionCount,
+                "nine columns across three positive batches");
+        assertEquals(executor.submissionCount, executor.completionCount,
+                "load must not return before copy tasks complete");
+        assertEquals(5, store.size());
+        assertNotNull(store.cursor());
+    }
+
+    @Test
+    void executorLoadSubmitsNoTasksForEmptyInput() throws Exception {
+        Path parquet = temporaryDirectory.resolve("executor-empty.parquet");
+        writeAllMappings(parquet, 0);
+        CountingDirectExecutor executor = new CountingDirectExecutor();
+
+        ProjectionStore<?> store = loadAdvanced(
+                "example.AllMappingsHardwoodLoader",
+                parquet,
+                2,
+                0,
+                executor);
+
+        assertEquals(0, executor.submissionCount);
+        assertEquals(0, store.size());
+        assertNotNull(store.cursor());
+    }
+
+    @Test
+    void parquetExecutorOverloadBorrowsExecutor() throws Exception {
+        Path parquet = temporaryDirectory.resolve("borrowed-executor.parquet");
+        writeInts(parquet, 70, 71, 72);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Class<?> loader = generatedClassLoader.loadClass(
+                    "example.IntProjectionHardwoodLoader");
+            ProjectionStore<?> store;
+            try (ParquetFileReader reader = ParquetFileReader.open(
+                    InputFile.of(parquet))) {
+                store = (ProjectionStore<?>) loader
+                        .getMethod(
+                                "load",
+                                ParquetFileReader.class,
+                                Executor.class)
+                        .invoke(null, reader, executor);
+            }
+
+            assertIntValues(store, 70, 71, 72);
+            assertFalse(executor.isShutdown(),
+                    "the generated loader and sealed store borrow executor");
+            assertEquals("still usable",
+                    executor.submit(() -> "still usable").get());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void interruptDuringNonFinalCopyCancelsBeforeAdvancingNextBatch()
+            throws Exception {
+        Path parquet = temporaryDirectory.resolve("interrupted-load.parquet");
+        writeInts(parquet, 90, 91, 92);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        ColumnProjection projection = (ColumnProjection) loader
+                .getMethod("projection")
+                .invoke(null);
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                    InputFile.of(parquet));
+             ColumnReaders columns = reader.buildColumnReaders(projection)
+                    .batchSize(1)
+                    .build()) {
+            Method load = loader.getMethod(
+                    "load", ColumnReaders.class, int.class, Executor.class);
+            InterruptingFirstTaskExecutor executor =
+                    new InterruptingFirstTaskExecutor();
+            AtomicReference<ProjectionStore<?>> result = new AtomicReference<>();
+            AtomicReference<Throwable> loadFailure = new AtomicReference<>();
+            AtomicBoolean interruptedAfterLoad = new AtomicBoolean();
+            AtomicBoolean nextBatchAvailable = new AtomicBoolean();
+            AtomicReference<Integer> nextValue = new AtomicReference<>();
+            AtomicReference<Throwable> inspectionFailure =
+                    new AtomicReference<>();
+            CountDownLatch loadFinished = new CountDownLatch(1);
+            Thread loadingThread = new Thread(() -> {
+                try {
+                    result.set((ProjectionStore<?>) load.invoke(
+                            null, columns, 0, executor));
+                } catch (InvocationTargetException exception) {
+                    loadFailure.set(exception.getCause());
+                } catch (Throwable failure) {
+                    loadFailure.set(failure);
+                } finally {
+                    boolean interrupted = Thread.currentThread()
+                            .isInterrupted();
+                    interruptedAfterLoad.set(interrupted);
+                    if (interrupted) {
+                        Thread.interrupted();
+                    }
+                    try {
+                        boolean available = columns.nextBatch();
+                        nextBatchAvailable.set(available);
+                        if (available) {
+                            nextValue.set(columns.getColumnReader("value")
+                                    .getInts()[0]);
+                        }
+                    } catch (Throwable failure) {
+                        inspectionFailure.set(failure);
+                    } finally {
+                        if (interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                        loadFinished.countDown();
+                    }
+                }
+            }, "hardwood-interrupted-load-caller");
+            loadingThread.setDaemon(true);
+            executor.setLoadingThread(loadingThread);
+
+            try {
+                loadingThread.start();
+                assertTrue(executor.awaitInterrupt(5, TimeUnit.SECONDS));
+                assertEquals(1L, loadFinished.getCount(),
+                        "append must quiesce its accepted copy before failing");
+
+                executor.releaseFirstTask();
+                assertTrue(loadFinished.await(5, TimeUnit.SECONDS));
+
+                assertNull(result.get(),
+                        "an interrupted load must not return a truncated store");
+                assertInstanceOf(CancellationException.class,
+                        loadFailure.get());
+                assertTrue(interruptedAfterLoad.get());
+                assertEquals(1, executor.submissionCount(),
+                        "the interrupted load must not append another batch");
+                assertNull(inspectionFailure.get());
+                assertTrue(nextBatchAvailable.get(),
+                        "the second input batch must remain unadvanced");
+                assertEquals(91, nextValue.get());
+
+                FutureTask<String> stillUsable = new FutureTask<>(
+                        () -> "still usable");
+                executor.execute(stillUsable);
+                assertEquals("still usable", stillUsable.get());
+            } finally {
+                executor.releaseFirstTask();
+                loadingThread.join(TimeUnit.SECONDS.toMillis(5));
+            }
+            assertFalse(loadingThread.isAlive());
+        }
+    }
+
+    @Test
+    void rejectedCopyIsPropagatedAndBorrowedExecutorRemainsUsable()
+            throws Exception {
+        Path parquet = temporaryDirectory.resolve("rejected-copy.parquet");
+        writeInts(parquet, 100);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        ColumnProjection projection = (ColumnProjection) loader
+                .getMethod("projection")
+                .invoke(null);
+        RejectOnceExecutor executor = new RejectOnceExecutor();
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                    InputFile.of(parquet));
+             ColumnReaders columns = reader.buildColumnReaders(projection)
+                    .batchSize(1)
+                    .build()) {
+            Method load = loader.getMethod(
+                    "load", ColumnReaders.class, int.class, Executor.class);
+            InvocationTargetException invocation = assertThrows(
+                    InvocationTargetException.class,
+                    () -> load.invoke(null, columns, 0, executor));
+
+            assertSame(executor.rejection, invocation.getCause());
+        }
+
+        FutureTask<String> stillUsable = new FutureTask<>(
+                () -> "still usable");
+        executor.execute(stillUsable);
+        assertEquals("still usable", stillUsable.get());
+    }
+
+    @Test
+    void nullExecutorIsRejectedBeforeInputIsConsumed() throws Exception {
+        Path parquet = temporaryDirectory.resolve("null-executor.parquet");
+        writeInts(parquet, 80, 81, 82);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        ColumnProjection projection = (ColumnProjection) loader
+                .getMethod("projection")
+                .invoke(null);
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                    InputFile.of(parquet));
+             ColumnReaders columns = reader.buildColumnReaders(projection)
+                    .batchSize(1)
+                    .build()) {
+            Method executorLoad = loader.getMethod(
+                    "load", ColumnReaders.class, int.class, Executor.class);
+            InvocationTargetException failure = assertThrows(
+                    InvocationTargetException.class,
+                    () -> executorLoad.invoke(null, columns, 0, null));
+            assertInstanceOf(NullPointerException.class, failure.getCause());
+
+            ProjectionStore<?> store = (ProjectionStore<?>) loader
+                    .getMethod("load", ColumnReaders.class, int.class)
+                    .invoke(null, columns, 0);
+            assertIntValues(store, 80, 81, 82);
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                InputFile.of(parquet))) {
+            Method executorLoad = loader.getMethod(
+                    "load", ParquetFileReader.class, Executor.class);
+            InvocationTargetException failure = assertThrows(
+                    InvocationTargetException.class,
+                    () -> executorLoad.invoke(null, reader, null));
+            assertInstanceOf(NullPointerException.class, failure.getCause());
+
+            ProjectionStore<?> store = (ProjectionStore<?>) loader
+                    .getMethod("load", ParquetFileReader.class)
+                    .invoke(null, reader);
+            assertIntValues(store, 80, 81, 82);
         }
     }
 
@@ -443,6 +697,31 @@ class HardwoodLoaderIntegrationTest {
         }
     }
 
+    private ProjectionStore<?> loadAdvanced(
+            String loaderName,
+            Path parquet,
+            int batchSize,
+            int expectedSize,
+            Executor executor) throws Exception {
+        Class<?> loader = generatedClassLoader.loadClass(loaderName);
+        ColumnProjection projection = (ColumnProjection) loader
+                .getMethod("projection")
+                .invoke(null);
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                    InputFile.of(parquet));
+             ColumnReaders columns = reader.buildColumnReaders(projection)
+                    .batchSize(batchSize)
+                    .build()) {
+            return (ProjectionStore<?>) loader
+                    .getMethod(
+                            "load",
+                            ColumnReaders.class,
+                            int.class,
+                            Executor.class)
+                    .invoke(null, columns, expectedSize, executor);
+        }
+    }
+
     private ProjectionStore<?> loadWithParquetReader(
             String loaderName, Path parquet) throws Exception {
         Class<?> loader = generatedClassLoader.loadClass(loaderName);
@@ -519,6 +798,92 @@ class HardwoodLoaderIntegrationTest {
         Field capacity = store.getClass().getDeclaredField("capacity");
         capacity.setAccessible(true);
         return capacity.getInt(store);
+    }
+
+    private static final class CountingDirectExecutor implements Executor {
+
+        private int submissionCount;
+        private int completionCount;
+
+        @Override
+        public void execute(Runnable command) {
+            submissionCount++;
+            command.run();
+            completionCount++;
+        }
+    }
+
+    private static final class InterruptingFirstTaskExecutor
+            implements Executor {
+
+        private final AtomicInteger submissions = new AtomicInteger();
+        private final CountDownLatch interruptSent = new CountDownLatch(1);
+        private final CountDownLatch releaseFirstTask = new CountDownLatch(1);
+        private volatile Thread loadingThread;
+
+        void setLoadingThread(Thread thread) {
+            loadingThread = thread;
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            if (submissions.incrementAndGet() != 1) {
+                command.run();
+                return;
+            }
+            Thread worker = new Thread(() -> {
+                loadingThread.interrupt();
+                interruptSent.countDown();
+                awaitUninterruptibly(releaseFirstTask);
+                command.run();
+            }, "hardwood-interrupting-copy-worker");
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        boolean awaitInterrupt(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            return interruptSent.await(timeout, unit);
+        }
+
+        void releaseFirstTask() {
+            releaseFirstTask.countDown();
+        }
+
+        int submissionCount() {
+            return submissions.get();
+        }
+    }
+
+    private static final class RejectOnceExecutor implements Executor {
+
+        private final RejectedExecutionException rejection =
+                new RejectedExecutionException("rejected copy");
+        private boolean reject = true;
+
+        @Override
+        public void execute(Runnable command) {
+            if (reject) {
+                reject = false;
+                throw rejection;
+            }
+            command.run();
+        }
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                latch.await();
+                break;
+            } catch (InterruptedException exception) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void writeAllMappings(Path path, int rowCount)

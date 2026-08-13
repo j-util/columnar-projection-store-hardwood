@@ -4,6 +4,19 @@ All notable user-visible changes are documented in this file.
 
 ## 1.1.0 - Unreleased
 
+### Added
+
+- Generated `load(ParquetFileReader, Executor)` and
+  `load(ColumnReaders, int, Executor)` overloads that synchronously copy each
+  batch's destination columns through a caller-owned executor. Reader
+  advancement, typed getters, and batch setters remain on the calling thread.
+- Explicit executor ownership and failure semantics: loaders never shut down a
+  borrowed executor, await accepted work before returning or throwing, submit
+  no tasks for empty input, and reject null before consuming input.
+- Interrupt-safe executor loading that preserves the calling thread's interrupt
+  status and throws `CancellationException` rather than returning a silently
+  truncated sealed store.
+
 ### Changed
 
 - Convenience loading now reads and exactly sums every supplied file's cached
@@ -12,6 +25,8 @@ All notable user-visible changes are documented in this file.
 - Indexed footer-read failures are exposed as `UncheckedIOException` without
   adding a checked exception to the generated loader API; combined row-count
   overflow is reported as `ArithmeticException`.
+- Development now targets Columnar Projection Store `1.3.0`, while retaining
+  the existing sequential loader overloads for source and binary compatibility.
 
 ## 1.0.0 - 2026-08-12
 

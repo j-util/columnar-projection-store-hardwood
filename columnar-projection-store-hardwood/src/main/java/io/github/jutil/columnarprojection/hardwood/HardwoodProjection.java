@@ -16,6 +16,12 @@ import java.lang.annotation.Target;
  * loader uses each effective projection accessor name as its Hardwood column
  * name. The annotation processor reports unsupported accessor types and
  * generated-name collisions at compilation time.
+ *
+ * <p>The generated loader provides both sequential overloads and overloads
+ * that borrow a caller-owned {@link java.util.concurrent.Executor} to copy a
+ * batch's independent destination columns concurrently. Hardwood cursor
+ * advancement and typed getters remain on the calling thread, and the loader
+ * never shuts down the borrowed executor.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.SOURCE)
