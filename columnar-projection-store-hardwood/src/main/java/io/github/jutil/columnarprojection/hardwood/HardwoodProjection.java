@@ -21,7 +21,9 @@ import java.lang.annotation.Target;
  * that borrow a caller-owned {@link java.util.concurrent.Executor} to copy a
  * batch's independent destination columns concurrently. Hardwood cursor
  * advancement and typed getters remain on the calling thread, and the loader
- * never shuts down the borrowed executor.
+ * never shuts down the borrowed executor. Convenience overloads can set the
+ * maximum records per Hardwood column batch; overloads without that argument
+ * retain Hardwood's automatic batch sizing.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.SOURCE)

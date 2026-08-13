@@ -579,6 +579,8 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "     *");
         line(source, "     * <p>This method closes only the projected {@code "
                 + "ColumnReaders} it creates. It never closes {@code reader}. "
+                + "Hardwood selects its default or adaptive column-batch "
+                + "size. "
                 + "Before allocating the store, it reads every file footer "
                 + "and exactly sums their row counts. Hardwood caches those "
                 + "footers for reuse while materializing the files in their "
@@ -601,10 +603,54 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "        java.util.Objects.requireNonNull(reader, "
                 + "\"reader\");");
         line(source, "        int expectedSize = expectedSize(reader);");
-        line(source, "        try (dev.hardwood.reader.ColumnReaders columns "
-                + "= reader.buildColumnReaders(projection()).build()) {");
-        line(source, "            return load(columns, expectedSize);");
-        line(source, "        }");
+        line(source, "        return loadCreatedColumns(");
+        line(source, "                reader.buildColumnReaders(projection())"
+                + ".build(),");
+        line(source, "                expectedSize);");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    /**");
+        line(source, "     * Reads and materializes the requested columns "
+                + "using an explicit maximum column-batch size.");
+        line(source, "     *");
+        line(source, "     * <p>{@code batchSize} is the maximum number of "
+                + "records Hardwood returns in each column batch. It must be "
+                + "positive and is validated before file footers are read or "
+                + "projected {@code ColumnReaders} are constructed or input "
+                + "is advanced. This method closes the column readers it "
+                + "creates on success or failure and never closes {@code "
+                + "reader}. Before allocating the store, "
+                + "it reads every file footer and exactly sums their row "
+                + "counts. Hardwood caches those footers for reuse while "
+                + "materializing the files in their supplied order. If "
+                + "reading fails, no partial store is returned.");
+        line(source, "     *");
+        line(source, "     * @param reader the caller-owned Parquet reader");
+        line(source, "     * @param batchSize maximum records per Hardwood "
+                + "column batch; must be greater than zero");
+        line(source, "     * @return a sealed generated store");
+        line(source, "     * @throws java.lang.NullPointerException if {@code "
+                + "reader} is null");
+        line(source, "     * @throws java.lang.ArithmeticException if the "
+                + "combined row count overflows a {@code long} or does not fit "
+                + "in an {@code int}");
+        line(source, "     * @throws java.io.UncheckedIOException if an indexed "
+                + "file-metadata read fails");
+        line(source, "     * @throws java.lang.IllegalArgumentException if "
+                + "{@code batchSize} is zero or negative, or if the Hardwood "
+                + "schema does not match this projection");
+        line(source, "     */");
+        line(source, "    public static " + storeName
+                + " load(dev.hardwood.reader.ParquetFileReader reader, "
+                + "int batchSize) {");
+        line(source, "        java.util.Objects.requireNonNull(reader, "
+                + "\"reader\");");
+        line(source, "        requirePositiveBatchSize(batchSize);");
+        line(source, "        int expectedSize = expectedSize(reader);");
+        line(source, "        return loadCreatedColumns(");
+        line(source, "                reader.buildColumnReaders(projection())"
+                + ".batchSize(batchSize).build(),");
+        line(source, "                expectedSize);");
         line(source, "    }");
         line(source, "");
         line(source, "    /**");
@@ -619,7 +665,8 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "executor}, and one batch completes before the next is "
                 + "advanced. This method closes only the projected {@code "
                 + "ColumnReaders} it creates; it never closes {@code reader} "
-                + "or shuts down {@code executor}.");
+                + "or shuts down {@code executor}. Hardwood selects its "
+                + "default or adaptive column-batch size.");
         line(source, "     * The executor must remain able to execute accepted "
                 + "work until this method returns; invoking the loader from "
                 + "the same saturated bounded executor can cause thread "
@@ -650,8 +697,89 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "\"executor\");");
         line(source, "        requireNotInterrupted();");
         line(source, "        int expectedSize = expectedSize(reader);");
-        line(source, "        dev.hardwood.reader.ColumnReaders columns = "
-                + "reader.buildColumnReaders(projection()).build();");
+        line(source, "        return loadCreatedColumns(");
+        line(source, "                reader.buildColumnReaders(projection())"
+                + ".build(),");
+        line(source, "                expectedSize,");
+        line(source, "                executor);");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    /**");
+        line(source, "     * Reads and materializes the requested columns "
+                + "using an explicit maximum column-batch size and a "
+                + "caller-owned executor for destination-column copies.");
+        line(source, "     *");
+        line(source, "     * <p>{@code batchSize} is the maximum number of "
+                + "records Hardwood returns in each column batch. It must be "
+                + "positive and is validated before file footers are read or "
+                + "projected {@code ColumnReaders} are constructed or input "
+                + "is advanced. This synchronous overload advances the "
+                + "reader and obtains each batch array on the calling "
+                + "thread. Only independent "
+                + "copies into the generated store are submitted to {@code "
+                + "executor}; every accepted task for one batch completes "
+                + "before the next batch is advanced or a copy failure is "
+                + "propagated. This method closes the column readers it "
+                + "creates on success or failure. It never closes {@code "
+                + "reader} or shuts down {@code executor}. If interrupted, "
+                + "it preserves the loading thread's interrupt status and "
+                + "throws {@code CancellationException} rather than "
+                + "returning a truncated store.");
+        line(source, "     * The executor must remain able to execute accepted "
+                + "work until this method returns; invoking the loader from "
+                + "the same saturated bounded executor can cause thread "
+                + "starvation.");
+        line(source, "     *");
+        line(source, "     * @param reader the caller-owned Parquet reader");
+        line(source, "     * @param batchSize maximum records per Hardwood "
+                + "column batch; must be greater than zero");
+        line(source, "     * @param executor the caller-owned executor used "
+                + "for destination-column copies");
+        line(source, "     * @return a sealed generated store");
+        line(source, "     * @throws java.lang.NullPointerException if {@code "
+                + "reader} or {@code executor} is null");
+        line(source, "     * @throws java.lang.ArithmeticException if the "
+                + "combined row count overflows a {@code long} or does not fit "
+                + "in an {@code int}");
+        line(source, "     * @throws java.io.UncheckedIOException if an indexed "
+                + "file-metadata read fails");
+        line(source, "     * @throws java.lang.IllegalArgumentException if "
+                + "{@code batchSize} is zero or negative, or if the Hardwood "
+                + "schema does not match this projection");
+        line(source, "     * @throws java.util.concurrent.CancellationException "
+                + "if the loading thread is interrupted");
+        line(source, "     */");
+        line(source, "    public static " + storeName
+                + " load(dev.hardwood.reader.ParquetFileReader reader, "
+                + "int batchSize, java.util.concurrent.Executor executor) {");
+        line(source, "        java.util.Objects.requireNonNull(reader, "
+                + "\"reader\");");
+        line(source, "        requirePositiveBatchSize(batchSize);");
+        line(source, "        java.util.Objects.requireNonNull(executor, "
+                + "\"executor\");");
+        line(source, "        requireNotInterrupted();");
+        line(source, "        int expectedSize = expectedSize(reader);");
+        line(source, "        return loadCreatedColumns(");
+        line(source, "                reader.buildColumnReaders(projection())"
+                + ".batchSize(batchSize).build(),");
+        line(source, "                expectedSize,");
+        line(source, "                executor);");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static " + storeName
+                + " loadCreatedColumns(");
+        line(source, "            dev.hardwood.reader.ColumnReaders columns,");
+        line(source, "            int expectedSize) {");
+        line(source, "        try (columns) {");
+        line(source, "            return load(columns, expectedSize);");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static " + storeName
+                + " loadCreatedColumns(");
+        line(source, "            dev.hardwood.reader.ColumnReaders columns,");
+        line(source, "            int expectedSize,");
+        line(source, "            java.util.concurrent.Executor executor) {");
         line(source, "        java.lang.Throwable failure = null;");
         line(source, "        try {");
         line(source, "            return load(columns, expectedSize, executor);");
@@ -662,6 +790,14 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "        } finally {");
         line(source, "            closeReadersPreservingInterrupt("
                 + "columns, failure);");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static void requirePositiveBatchSize("
+                + "int batchSize) {");
+        line(source, "        if (batchSize <= 0) {");
+        line(source, "            throw new java.lang.IllegalArgumentException("
+                + "\"batchSize must be greater than zero: \" + batchSize);");
         line(source, "        }");
         line(source, "    }");
         line(source, "");

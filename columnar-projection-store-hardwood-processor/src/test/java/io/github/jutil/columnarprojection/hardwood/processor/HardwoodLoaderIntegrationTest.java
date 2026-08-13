@@ -236,6 +236,195 @@ class HardwoodLoaderIntegrationTest {
     }
 
     @Test
+    void parquetBatchSizeOverloadLoadsMultipleBatchesInOrderAndKeepsReaderOpen()
+            throws Exception {
+        Path parquet = temporaryDirectory.resolve("explicit-batches.parquet");
+        writeInts(parquet, 60, 61, 62, 63, 64);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        Method load = loader.getMethod(
+                "load", ParquetFileReader.class, int.class);
+        ColumnProjection projection = (ColumnProjection) loader
+                .getMethod("projection")
+                .invoke(null);
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                InputFile.of(parquet))) {
+            ProjectionStore<?> store = (ProjectionStore<?>) load.invoke(
+                    null, reader, 2);
+
+            assertIntValues(store, 60, 61, 62, 63, 64);
+            assertNotNull(store.cursor());
+            assertEquals(5, capacity(store));
+            try (ColumnReaders secondRead = reader
+                    .buildColumnReaders(projection)
+                    .batchSize(1)
+                    .build()) {
+                assertTrue(secondRead.nextBatch(),
+                        "the explicit-batch overload must not close reader");
+            }
+        }
+    }
+
+    @Test
+    void parquetBatchSizeExecutorOverloadUsesEveryBatchAndPreservesOrder()
+            throws Exception {
+        Path parquet = temporaryDirectory.resolve(
+                "explicit-executor-batches.parquet");
+        writeInts(parquet, 70, 71, 72, 73, 74);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        Method load = loader.getMethod(
+                "load",
+                ParquetFileReader.class,
+                int.class,
+                Executor.class);
+        ColumnProjection projection = (ColumnProjection) loader
+                .getMethod("projection")
+                .invoke(null);
+        CountingDirectExecutor executor = new CountingDirectExecutor();
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                InputFile.of(parquet))) {
+            ProjectionStore<?> store = (ProjectionStore<?>) load.invoke(
+                    null, reader, 2, executor);
+
+            assertEquals(3, executor.submissionCount,
+                    "one column across three positive batches");
+            assertEquals(executor.submissionCount, executor.completionCount,
+                    "the synchronous load must await every copy");
+            assertIntValues(store, 70, 71, 72, 73, 74);
+            assertNotNull(store.cursor());
+            try (ColumnReaders secondRead = reader
+                    .buildColumnReaders(projection)
+                    .batchSize(1)
+                    .build()) {
+                assertTrue(secondRead.nextBatch(),
+                        "the executor overload must not close reader");
+            }
+        }
+
+        FutureTask<String> stillUsable = new FutureTask<>(() -> "still usable");
+        executor.execute(stillUsable);
+        assertEquals("still usable", stillUsable.get(),
+                "the loader must not own the executor");
+    }
+
+    @Test
+    void parquetBatchSizeOverloadsReturnSealedStoresForEmptyInput()
+            throws Exception {
+        Path parquet = temporaryDirectory.resolve(
+                "explicit-empty.parquet");
+        writeInts(parquet);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        Method sequentialLoad = loader.getMethod(
+                "load", ParquetFileReader.class, int.class);
+        Method executorLoad = loader.getMethod(
+                "load",
+                ParquetFileReader.class,
+                int.class,
+                Executor.class);
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                InputFile.of(parquet))) {
+            ProjectionStore<?> store = (ProjectionStore<?>) sequentialLoad
+                    .invoke(null, reader, 2);
+            assertEquals(0, store.size());
+            assertNotNull(store.cursor());
+        }
+
+        CountingDirectExecutor executor = new CountingDirectExecutor();
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                InputFile.of(parquet))) {
+            ProjectionStore<?> store = (ProjectionStore<?>) executorLoad
+                    .invoke(null, reader, 2, executor);
+            assertEquals(0, store.size());
+            assertNotNull(store.cursor());
+        }
+        assertEquals(0, executor.submissionCount,
+                "empty input must not submit destination copies");
+    }
+
+    @Test
+    void invalidParquetBatchSizesAreRejectedBeforeInputWork()
+            throws Exception {
+        Path parquet = temporaryDirectory.resolve(
+                "invalid-explicit-batch.parquet");
+        writeInts(parquet, 80, 81, 82);
+        Class<?> loader = generatedClassLoader.loadClass(
+                "example.IntProjectionHardwoodLoader");
+        Method sequentialLoad = loader.getMethod(
+                "load", ParquetFileReader.class, int.class);
+        Method executorLoad = loader.getMethod(
+                "load",
+                ParquetFileReader.class,
+                int.class,
+                Executor.class);
+        CountingDirectExecutor executor = new CountingDirectExecutor();
+
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                InputFile.of(parquet))) {
+            for (int invalidBatchSize : new int[]{0, -1}) {
+                IllegalArgumentException sequentialFailure =
+                        assertInvocationFailure(
+                                IllegalArgumentException.class,
+                                sequentialLoad,
+                                reader,
+                                invalidBatchSize);
+                assertTrue(sequentialFailure.getMessage().contains(
+                        Integer.toString(invalidBatchSize)));
+                assertInvocationFailure(
+                        IllegalArgumentException.class,
+                        executorLoad,
+                        reader,
+                        invalidBatchSize,
+                        executor);
+            }
+
+            assertEquals(0, executor.submissionCount);
+            ProjectionStore<?> store = (ProjectionStore<?>) sequentialLoad
+                    .invoke(null, reader, 1);
+            assertIntValues(store, 80, 81, 82);
+        }
+
+        Path first = temporaryDirectory.resolve(
+                "invalid-batch-footer-first.parquet");
+        Path second = temporaryDirectory.resolve(
+                "invalid-batch-footer-second.parquet");
+        writeInts(first, 90);
+        writeInts(second, 91);
+        for (int invalidBatchSize : new int[]{0, -2}) {
+            IOException original = new IOException(
+                    "footer trap for " + invalidBatchSize);
+            InputFile failing = new MetadataFailingInputFile(
+                    InputFile.of(second), original);
+            try (ParquetFileReader reader = ParquetFileReader.openAll(List.of(
+                    InputFile.of(first), failing))) {
+                assertInvocationFailure(
+                        IllegalArgumentException.class,
+                        sequentialLoad,
+                        reader,
+                        invalidBatchSize);
+                assertInvocationFailure(
+                        IllegalArgumentException.class,
+                        executorLoad,
+                        reader,
+                        invalidBatchSize,
+                        executor);
+
+                UncheckedIOException footerFailure = assertInvocationFailure(
+                        UncheckedIOException.class,
+                        sequentialLoad,
+                        reader,
+                        1);
+                assertSame(original, footerFailure.getCause(),
+                        "the invalid calls must precede the trapped footer");
+            }
+        }
+    }
+
+    @Test
     void parquetExecutorOverloadBorrowsExecutor() throws Exception {
         Path parquet = temporaryDirectory.resolve("borrowed-executor.parquet");
         writeInts(parquet, 70, 71, 72);
@@ -766,6 +955,16 @@ class HardwoodLoaderIntegrationTest {
     private static Object invoke(
             Class<?> projection, Object view, String method) throws Exception {
         return projection.getMethod(method).invoke(view);
+    }
+
+    private static <T extends Throwable> T assertInvocationFailure(
+            Class<T> expectedType,
+            Method method,
+            Object... arguments) {
+        InvocationTargetException invocation = assertThrows(
+                InvocationTargetException.class,
+                () -> method.invoke(null, arguments));
+        return assertInstanceOf(expectedType, invocation.getCause());
     }
 
     private void assertIntValues(ProjectionStore<?> store, int... expected)

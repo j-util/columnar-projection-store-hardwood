@@ -6,6 +6,12 @@ All notable user-visible changes are documented in this file.
 
 ### Added
 
+- Generated `load(ParquetFileReader, int batchSize)` and
+  `load(ParquetFileReader, int batchSize, Executor)` convenience overloads.
+  The positive batch size bounds the records Hardwood returns per column batch
+  and is rejected before footer reads, column-reader construction, or input
+  advancement when zero or negative. Overloads without `batchSize` retain
+  Hardwood's automatic default or adaptive sizing.
 - Generated `load(ParquetFileReader, Executor)` and
   `load(ColumnReaders, int, Executor)` overloads that synchronously copy each
   batch's destination columns through a caller-owned executor. Reader

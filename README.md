@@ -114,7 +114,21 @@ For a member projection, the generated loader follows the schema's binary
 name. `Outer.PriceProjection`, for example, produces the public top-level type
 `Outer$PriceProjectionHardwoodLoader`.
 
-## Advanced loading and ownership
+## Batch sizing, advanced loading, and ownership
+
+Set an explicit upper bound on the records Hardwood returns per column batch
+without constructing column readers yourself:
+
+```java
+PriceProjectionStore store =
+        PriceProjectionHardwoodLoader.load(reader, 4096);
+```
+
+The batch size must be greater than zero. It is validated before the loader
+reads file footers or constructs column readers. The overloads without a
+`batchSize` argument—`load(reader)` and `load(reader, executor)`—continue to
+use Hardwood's automatic default or adaptive batch sizing; the integration
+does not substitute a hardcoded default.
 
 Use the advanced overload when the caller needs to configure filters, batch
 size, or row-group selection:
@@ -139,7 +153,8 @@ import java.util.concurrent.Executors;
 ExecutorService columnCopies = Executors.newFixedThreadPool(3);
 try {
     PriceProjectionStore store =
-            PriceProjectionHardwoodLoader.load(reader, columnCopies);
+            PriceProjectionHardwoodLoader.load(
+                    reader, 4096, columnCopies);
 } finally {
     columnCopies.shutdown();
 }
@@ -148,14 +163,20 @@ try {
 The executor is borrowed from the caller. The loader and generated store never
 shut it down; sealing only releases the store's reference to it. The caller may
 reuse one executor across loads and should shut it down only after all such
-loads have returned. The corresponding advanced overload is
-`load(ColumnReaders, int, Executor)`.
+loads have returned. Omit `4096` to use Hardwood's automatic batch sizing. The
+corresponding advanced overload is `load(ColumnReaders, int, Executor)`.
 
-- `load(ParquetFileReader)` requires a non-null reader, creates the projected
-  `ColumnReaders`, and closes only those created column readers. It never
-  closes the caller's `ParquetFileReader`.
-- Before allocating, that overload reads every supplied file's footer in order
-  and uses the exact combined row count as the initial capacity. Hardwood
+- All `ParquetFileReader` overloads require a non-null reader, create the
+  projected `ColumnReaders`, and close only those created column readers. They
+  never close the caller's `ParquetFileReader`.
+- `load(ParquetFileReader, int)` and
+  `load(ParquetFileReader, int, Executor)` treat `batchSize` as the maximum
+  records Hardwood returns per column batch. Zero and negative values cause
+  `IllegalArgumentException` before footers are read, column readers are
+  constructed, or input is advanced.
+- Before allocating, every `ParquetFileReader` overload reads each supplied
+  file's footer in order and uses the exact combined row count as the initial
+  capacity. Hardwood
   caches those footers for reuse while materializing every file in the same
   supplied order. A combined total that overflows `long`, or that cannot be
   represented by `int`, causes `ArithmeticException`. An indexed footer-read
