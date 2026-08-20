@@ -1,6 +1,7 @@
 # columnar-projection-store-hardwood
 
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.j-util/columnar-projection-store-hardwood.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store-hardwood)
+[![Javadoc](https://javadoc.io/badge2/io.github.j-util/columnar-projection-store-hardwood/javadoc.svg)](https://javadoc.io/doc/io.github.j-util/columnar-projection-store-hardwood)
 
 Generate schema-specific loaders that transfer Hardwood column batches
 directly into [Columnar Projection Store](https://github.com/j-util/columnar-projection-store)
@@ -11,6 +12,17 @@ This is an independent j-util integration. It is not affiliated with or
 endorsed by the Hardwood project or its maintainers.
 
 The project requires Java 21 or newer. The initial release is `1.0.0`.
+
+Published artifacts:
+
+- `columnar-projection-store-hardwood`:
+  [Maven Central](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store-hardwood)
+  and
+  [Javadoc](https://javadoc.io/doc/io.github.j-util/columnar-projection-store-hardwood)
+- `columnar-projection-store-hardwood-processor`:
+  [Maven Central](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store-hardwood-processor)
+  and
+  [Javadoc](https://javadoc.io/doc/io.github.j-util/columnar-projection-store-hardwood-processor)
 
 ## Installation
 
