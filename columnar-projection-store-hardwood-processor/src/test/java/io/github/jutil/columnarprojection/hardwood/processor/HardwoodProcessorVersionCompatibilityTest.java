@@ -65,14 +65,87 @@ class HardwoodProcessorVersionCompatibilityTest {
 
         assertFalse(compilation.successful(), compilation.messages());
         assertTrue(compilation.messages().contains(
-                "does not expose the required static create(int expectedSize, "
-                        + "Executor executor) factory"),
+                "lacks the required Columnar Projection Store 1.3 "
+                        + "column-appender API"),
                 compilation.messages());
         assertTrue(compilation.messages().contains(
-                "columnar-projection-store-processor 1.3.0 or newer"),
+                "public static create(int expectedSize)"),
+                compilation.messages());
+        assertTrue(compilation.messages().contains(
+                "columnAppender() returning the generated appender contract"),
                 compilation.messages());
         assertFalse(compilation.messages().contains(
                 "did not generate the store contract"),
+                compilation.messages());
+    }
+
+    @Test
+    void reportsMissingRangedColumnAppenderMethodPrecisely() throws Exception {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("example.PriceProjection", """
+                package example;
+
+                @io.github.jutil.columnarprojection.ProjectionSchema
+                @io.github.jutil.columnarprojection.hardwood.HardwoodProjection
+                public interface PriceProjection {
+                    int value();
+                }
+                """);
+        sources.put("example.PriceProjectionBatch", """
+                package example;
+
+                public interface PriceProjectionBatch {
+                    PriceProjectionBatch value(int[] values);
+                }
+                """);
+        sources.put("example.PriceProjectionAppender", """
+                package example;
+
+                public interface PriceProjectionAppender {
+                    void value(int[] values);
+                }
+                """);
+        sources.put("example.PriceProjectionStore", """
+                package example;
+
+                public interface PriceProjectionStore extends
+                        io.github.jutil.columnarprojection.ProjectionStore<
+                                PriceProjection> {
+                    static PriceProjectionStore create(int expectedSize) {
+                        return null;
+                    }
+
+                    PriceProjectionAppender columnAppender();
+
+                    PriceProjectionBatch batch(int fromIndex, int toIndex);
+                }
+                """);
+        sources.put(
+                "example.PriceProjection__ColumnarProjectionStore",
+                """
+                package example;
+
+                public abstract class
+                        PriceProjection__ColumnarProjectionStore
+                        implements PriceProjectionStore {
+                    public PriceProjection__ColumnarProjectionStore(
+                            int expectedSize) {
+                    }
+                }
+                """);
+
+        CompilerTestSupport.Compilation compilation =
+                CompilerTestSupport.compile(
+                        temporaryDirectory.resolve("missing-ranged-appender"),
+                        sources,
+                        List.of(new HardwoodProjectionProcessor()));
+
+        assertFalse(compilation.successful(), compilation.messages());
+        assertTrue(compilation.messages().contains(
+                "ranged appender method value(int[], int, int)"),
+                compilation.messages());
+        assertFalse(compilation.messages().contains(
+                "create(int expectedSize, Executor executor)"),
                 compilation.messages());
     }
 }

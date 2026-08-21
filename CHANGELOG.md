@@ -13,9 +13,10 @@ All notable user-visible changes are documented in this file.
   advancement when zero or negative. Overloads without `batchSize` retain
   Hardwood's automatic default or adaptive sizing.
 - Generated `load(ParquetFileReader, Executor)` and
-  `load(ColumnReaders, int, Executor)` overloads that synchronously copy each
-  batch's destination columns through a caller-owned executor. Reader
-  advancement, typed getters, and batch setters remain on the calling thread.
+  `load(ColumnReaders, int, Executor)` overloads that synchronously capture
+  each positive Hardwood batch's arrays on the calling thread, then submit one
+  generated ranged column-appender call per projection column through a
+  caller-owned executor.
 - Explicit executor ownership and failure semantics: loaders never shut down a
   borrowed executor, await accepted work before returning or throwing, submit
   no tasks for empty input, and reject null before consuming input.
@@ -32,7 +33,11 @@ All notable user-visible changes are documented in this file.
   adding a checked exception to the generated loader API; combined row-count
   overflow is reported as `ArithmeticException`.
 - Development now targets Columnar Projection Store `1.3.0`, while retaining
-  the existing sequential loader overloads for source and binary compatibility.
+  the existing sequential loader overloads and their ranged-batch path for
+  source and binary compatibility. Executor loaders discover the generated
+  store's actual collision-safe `columnAppender()` return type and require
+  `create(int)` plus a matching ranged appender method for every column; an
+  incompatible generated contract now produces a precise compiler diagnostic.
 
 ## 1.0.0 - 2026-08-12
 

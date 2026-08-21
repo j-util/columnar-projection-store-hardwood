@@ -225,18 +225,6 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                             + "constructor(int expectedSize)");
             return GenerationResult.FAILED;
         }
-        if (!hasExecutorFactory(storeType)) {
-            error(pendingSchema.schema,
-                    "The generated store contract "
-                            + ((TypeElement) storeType.asElement())
-                                    .getQualifiedName()
-                            + " does not expose the required static "
-                            + "create(int expectedSize, Executor executor) "
-                            + "factory; use columnar-projection-store-"
-                            + "processor 1.3.0 or newer");
-            return GenerationResult.FAILED;
-        }
-
         List<ColumnBinding> columns = inspectBatchColumns(
                 pendingSchema.schema, batchType);
         if (columns == null) {
@@ -250,11 +238,18 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
             return GenerationResult.FAILED;
         }
 
+        DeclaredType columnAppenderType = findColumnAppenderType(
+                pendingSchema.schema, storeType, columns);
+        if (columnAppenderType == null) {
+            return GenerationResult.FAILED;
+        }
+
         String source = generateSource(
                 pendingSchema,
                 implementation,
                 storeType,
                 batchType,
+                columnAppenderType,
                 columns);
         try {
             JavaFileObject sourceFile = filer.createSourceFile(
@@ -368,31 +363,112 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         return false;
     }
 
-    private boolean hasExecutorFactory(DeclaredType storeType) {
+    private DeclaredType findColumnAppenderType(
+            TypeElement schema,
+            DeclaredType storeType,
+            List<ColumnBinding> columns) {
         TypeElement storeElement = (TypeElement) storeType.asElement();
-        TypeElement executor = elements.getTypeElement(
-                "java.util.concurrent.Executor");
-        if (executor == null) {
-            return false;
+        List<String> missing = new ArrayList<>();
+        if (!hasCreateFactory(storeType)) {
+            missing.add("public static create(int expectedSize)");
         }
+
+        DeclaredType appenderType = null;
+        boolean ambiguousAppenderType = false;
+        for (ExecutableElement method : ElementFilter.methodsIn(
+                elements.getAllMembers(storeElement))) {
+            if (!method.getSimpleName().contentEquals("columnAppender")
+                    || !method.getModifiers().contains(Modifier.PUBLIC)
+                    || method.getModifiers().contains(Modifier.STATIC)) {
+                continue;
+            }
+            ExecutableType member = (ExecutableType) types.asMemberOf(
+                    storeType, method);
+            if (!member.getParameterTypes().isEmpty()
+                    || member.getReturnType().getKind()
+                            != TypeKind.DECLARED) {
+                continue;
+            }
+            DeclaredType candidate = (DeclaredType) member.getReturnType();
+            if (appenderType == null
+                    || types.isSubtype(
+                            types.erasure(candidate),
+                            types.erasure(appenderType))) {
+                appenderType = candidate;
+                ambiguousAppenderType = false;
+            } else if (!types.isSubtype(
+                    types.erasure(appenderType),
+                    types.erasure(candidate))) {
+                ambiguousAppenderType = true;
+            }
+        }
+        if (appenderType == null) {
+            missing.add("columnAppender() returning the generated appender "
+                    + "contract");
+        } else if (ambiguousAppenderType) {
+            missing.add("an unambiguous columnAppender() return type");
+        } else {
+            for (ColumnBinding column : columns) {
+                if (!hasRangedAppenderMethod(appenderType, column)) {
+                    missing.add("ranged appender method " + column.name + "("
+                            + column.parameterType + ", int, int)");
+                }
+            }
+        }
+        if (!missing.isEmpty()) {
+            error(schema,
+                    "The generated store contract "
+                            + storeElement.getQualifiedName()
+                            + " lacks the required Columnar Projection Store "
+                            + "1.3 column-appender API: "
+                            + String.join(", ", missing)
+                            + "; use columnar-projection-store-processor "
+                            + "1.3.0 or newer and clean the compilation output");
+            return null;
+        }
+        return appenderType;
+    }
+
+    private boolean hasCreateFactory(DeclaredType storeType) {
+        TypeElement storeElement = (TypeElement) storeType.asElement();
         for (ExecutableElement method : ElementFilter.methodsIn(
                 storeElement.getEnclosedElements())) {
             if (!method.getSimpleName().contentEquals("create")
+                    || !method.getModifiers().contains(Modifier.PUBLIC)
                     || !method.getModifiers().contains(Modifier.STATIC)
-                    || method.getParameters().size() != 2) {
+                    || method.getParameters().size() != 1
+                    || method.getParameters().get(0).asType().getKind()
+                            != TypeKind.INT) {
                 continue;
             }
-            List<? extends TypeMirror> parameters = method.getParameters()
-                    .stream()
-                    .map(parameter -> parameter.asType())
-                    .toList();
-            if (parameters.get(0).getKind() == TypeKind.INT
+            if (types.isAssignable(
+                    types.erasure(method.getReturnType()),
+                    types.erasure(storeType))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasRangedAppenderMethod(
+            DeclaredType appenderType, ColumnBinding column) {
+        TypeElement appenderElement = (TypeElement) appenderType.asElement();
+        for (ExecutableElement method : ElementFilter.methodsIn(
+                elements.getAllMembers(appenderElement))) {
+            if (!method.getSimpleName().contentEquals(column.name)
+                    || !method.getModifiers().contains(Modifier.PUBLIC)
+                    || method.getModifiers().contains(Modifier.STATIC)) {
+                continue;
+            }
+            ExecutableType member = (ExecutableType) types.asMemberOf(
+                    appenderType, method);
+            List<? extends TypeMirror> parameters = member.getParameterTypes();
+            if (parameters.size() == 3
                     && types.isSameType(
-                            types.erasure(parameters.get(1)),
-                            types.erasure(executor.asType()))
-                    && types.isAssignable(
-                            types.erasure(method.getReturnType()),
-                            types.erasure(storeType))) {
+                            parameters.get(0), column.parameterType)
+                    && parameters.get(1).getKind() == TypeKind.INT
+                    && parameters.get(2).getKind() == TypeKind.INT
+                    && member.getReturnType().getKind() == TypeKind.VOID) {
                 return true;
             }
         }
@@ -505,11 +581,13 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
             TypeElement implementation,
             DeclaredType storeType,
             DeclaredType batchType,
+            DeclaredType columnAppenderType,
             List<ColumnBinding> columns) {
         String storeName = ((TypeElement) storeType.asElement())
                 .getQualifiedName().toString();
         String implementationName = implementation.getQualifiedName().toString();
         String batchName = batchType.toString();
+        String columnAppenderName = columnAppenderType.toString();
         StringBuilder source = new StringBuilder(16384);
         if (!pendingSchema.packageName.isEmpty()) {
             line(source, "package " + pendingSchema.packageName + ";");
@@ -542,6 +620,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 storeName,
                 implementationName,
                 batchName,
+                columnAppenderName,
                 columns);
         appendValidationHelpers(source);
         line(source, "}");
@@ -655,13 +734,13 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "");
         line(source, "    /**");
         line(source, "     * Reads and materializes the requested columns, "
-                + "copying each batch's destination columns through a "
+                + "appending each batch's columns through a "
                 + "caller-owned executor.");
         line(source, "     *");
         line(source, "     * <p>This overload preserves Hardwood's single-"
                 + "threaded cursor: it advances the reader and obtains each "
                 + "batch array on the calling thread. Only independent "
-                + "copies into the generated store are submitted to {@code "
+                + "ranged column-appender calls are submitted to {@code "
                 + "executor}, and one batch completes before the next is "
                 + "advanced. This method closes only the projected {@code "
                 + "ColumnReaders} it creates; it never closes {@code reader} "
@@ -674,7 +753,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "     *");
         line(source, "     * @param reader the caller-owned Parquet reader");
         line(source, "     * @param executor the caller-owned executor used "
-                + "for destination-column copies");
+                + "for ranged column appends");
         line(source, "     * @return a sealed generated store");
         line(source, "     * @throws java.lang.NullPointerException if either "
                 + "argument is null");
@@ -707,7 +786,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "    /**");
         line(source, "     * Reads and materializes the requested columns "
                 + "using an explicit maximum column-batch size and a "
-                + "caller-owned executor for destination-column copies.");
+                + "caller-owned executor for ranged column appends.");
         line(source, "     *");
         line(source, "     * <p>{@code batchSize} is the maximum number of "
                 + "records Hardwood returns in each column batch. It must be "
@@ -716,9 +795,9 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "is advanced. This synchronous overload advances the "
                 + "reader and obtains each batch array on the calling "
                 + "thread. Only independent "
-                + "copies into the generated store are submitted to {@code "
+                + "ranged column-appender calls are submitted to {@code "
                 + "executor}; every accepted task for one batch completes "
-                + "before the next batch is advanced or a copy failure is "
+                + "before the next batch is advanced or an append failure is "
                 + "propagated. This method closes the column readers it "
                 + "creates on success or failure. It never closes {@code "
                 + "reader} or shuts down {@code executor}. If interrupted, "
@@ -734,7 +813,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "     * @param batchSize maximum records per Hardwood "
                 + "column batch; must be greater than zero");
         line(source, "     * @param executor the caller-owned executor used "
-                + "for destination-column copies");
+                + "for ranged column appends");
         line(source, "     * @return a sealed generated store");
         line(source, "     * @throws java.lang.NullPointerException if {@code "
                 + "reader} or {@code executor} is null");
@@ -827,6 +906,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
             String storeName,
             String implementationName,
             String batchName,
+            String columnAppenderName,
             List<ColumnBinding> columns) {
         line(source, "    /**");
         line(source, "     * Consumes caller-configured aligned column readers "
@@ -895,14 +975,14 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "");
         line(source, "    /**");
         line(source, "     * Consumes caller-configured aligned column readers "
-                + "and copies each batch's destination columns through a "
+                + "and appends each batch's columns through a "
                 + "caller-owned executor.");
         line(source, "     *");
         line(source, "     * <p>The caller retains ownership of both {@code "
                 + "readers} and {@code executor}; this method closes neither. "
                 + "It advances readers and invokes their typed accessors only "
-                + "on the calling thread. A batch append submits one "
-                + "destination-array copy per projection column and waits for "
+                + "on the calling thread. Each positive batch submits one "
+                + "ranged appender call per projection column and waits for "
                 + "all accepted work before the next input batch is advanced. "
                 + "Every mapping is validated before the first advance.");
         line(source, "     * The executor must remain able to execute accepted "
@@ -915,7 +995,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "     * @param expectedSize initial-capacity hint, or zero "
                 + "when unknown");
         line(source, "     * @param executor caller-owned executor for "
-                + "destination-column copies");
+                + "ranged column appends");
         line(source, "     * @return a sealed generated store");
         line(source, "     * @throws java.lang.NullPointerException if {@code "
                 + "readers} or {@code executor} is null");
@@ -957,7 +1037,9 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         }
         line(source, "");
         line(source, "        " + storeName + " store = " + storeName
-                + ".create(expectedSize, executor);");
+                + ".create(expectedSize);");
+        line(source, "        " + columnAppenderName
+                + " columnAppender = store.columnAppender();");
         line(source, "        while (true) {");
         line(source, "            requireNotInterrupted();");
         line(source, "            boolean batchAvailable = readers.nextBatch();");
@@ -966,15 +1048,42 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "                break;");
         line(source, "            }");
         line(source, "            int recordCount = readers.getRecordCount();");
-        line(source, "            " + batchName
-                + " batch = store.batch(0, recordCount);");
+        line(source, "            if (recordCount == 0) {");
+        line(source, "                continue;");
+        line(source, "            }");
         for (int index = 0; index < columns.size(); index++) {
             ColumnBinding column = columns.get(index);
-            line(source, "            batch." + column.name + "(column"
-                    + index + "." + column.mapping.readerAccessor + "());");
+            line(source, "            final " + column.parameterType
+                    + " values" + index + " = column" + index + "."
+                    + column.mapping.readerAccessor + "();");
         }
         line(source, "            requireNotInterrupted();");
-        line(source, "            batch.append();");
+        line(source, "            java.util.concurrent.Future<?>[] tasks =");
+        line(source, "                    new java.util.concurrent.Future<?>["
+                + columns.size() + "];");
+        line(source, "            java.lang.Throwable submissionFailure = null;");
+        line(source, "            try {");
+        for (int index = 0; index < columns.size(); index++) {
+            ColumnBinding column = columns.get(index);
+            line(source, "                tasks[" + index + "] = "
+                    + "submitColumnAppend(");
+            line(source, "                        () -> columnAppender."
+                    + column.name + "(values" + index
+                    + ", 0, recordCount), executor);");
+            line(source, "                requireNotInterrupted();");
+        }
+        line(source, "            } catch (java.lang.Throwable failure) {");
+        line(source, "                submissionFailure = failure;");
+        line(source, "            }");
+        line(source, "            java.lang.Throwable taskFailure =");
+        line(source, "                    awaitColumnAppends(tasks);");
+        line(source, "            java.lang.Throwable appendFailure =");
+        line(source, "                    combineFailures("
+                + "submissionFailure, taskFailure);");
+        line(source, "            if (appendFailure != null) {");
+        line(source, "                throw propagateAppenderFailure("
+                + "appendFailure);");
+        line(source, "            }");
         line(source, "            requireNotInterrupted();");
         line(source, "        }");
         line(source, "        requireNotInterrupted();");
@@ -985,6 +1094,83 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
     }
 
     private void appendValidationHelpers(StringBuilder source) {
+        line(source, "    private static java.util.concurrent.Future<?> "
+                + "submitColumnAppend(");
+        line(source, "            java.lang.Runnable append,");
+        line(source, "            java.util.concurrent.Executor executor) {");
+        line(source, "        java.util.concurrent.FutureTask<java.lang.Void> "
+                + "task = new java.util.concurrent.FutureTask<>(append, null);");
+        line(source, "        executor.execute(task);");
+        line(source, "        return task;");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static java.lang.Throwable "
+                + "awaitColumnAppends(java.util.concurrent.Future<?>[] tasks) {");
+        line(source, "        java.lang.Throwable failure = null;");
+        line(source, "        boolean interrupted = false;");
+        line(source, "        try {");
+        line(source, "            for (java.util.concurrent.Future<?> task "
+                + ": tasks) {");
+        line(source, "                if (task == null) {");
+        line(source, "                    continue;");
+        line(source, "                }");
+        line(source, "                boolean completed = false;");
+        line(source, "                while (!completed) {");
+        line(source, "                    try {");
+        line(source, "                        task.get();");
+        line(source, "                        completed = true;");
+        line(source, "                    } catch (java.lang.InterruptedException "
+                + "exception) {");
+        line(source, "                        interrupted = true;");
+        line(source, "                    } catch (java.util.concurrent."
+                + "ExecutionException exception) {");
+        line(source, "                        java.lang.Throwable cause = "
+                + "exception.getCause();");
+        line(source, "                        failure = combineFailures("
+                + "failure, cause == null ? exception : cause);");
+        line(source, "                        completed = true;");
+        line(source, "                    } catch (java.util.concurrent."
+                + "CancellationException exception) {");
+        line(source, "                        failure = combineFailures("
+                + "failure, exception);");
+        line(source, "                        completed = true;");
+        line(source, "                    }");
+        line(source, "                }");
+        line(source, "            }");
+        line(source, "        } finally {");
+        line(source, "            if (interrupted) {");
+        line(source, "                java.lang.Thread.currentThread()."
+                + "interrupt();");
+        line(source, "            }");
+        line(source, "        }");
+        line(source, "        return failure;");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static java.lang.Throwable combineFailures(");
+        line(source, "            java.lang.Throwable primary,");
+        line(source, "            java.lang.Throwable additional) {");
+        line(source, "        if (primary == null) {");
+        line(source, "            return additional;");
+        line(source, "        }");
+        line(source, "        if (additional != null && additional != primary) {");
+        line(source, "            primary.addSuppressed(additional);");
+        line(source, "        }");
+        line(source, "        return primary;");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static java.lang.RuntimeException "
+                + "propagateAppenderFailure(java.lang.Throwable failure) {");
+        line(source, "        if (failure instanceof "
+                + "java.lang.RuntimeException) {");
+        line(source, "            return (java.lang.RuntimeException) failure;");
+        line(source, "        }");
+        line(source, "        if (failure instanceof java.lang.Error) {");
+        line(source, "            throw (java.lang.Error) failure;");
+        line(source, "        }");
+        line(source, "        return new java.lang.IllegalStateException(");
+        line(source, "                \"Column appender task failed\", failure);");
+        line(source, "    }");
+        line(source, "");
         line(source, "    private static void requireNotInterrupted() {");
         line(source, "        if (java.lang.Thread.currentThread()."
                 + "isInterrupted()) {");

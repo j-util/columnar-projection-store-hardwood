@@ -18,8 +18,8 @@ import java.lang.annotation.Target;
  * generated-name collisions at compilation time.
  *
  * <p>The generated loader provides both sequential overloads and overloads
- * that borrow a caller-owned {@link java.util.concurrent.Executor} to copy a
- * batch's independent destination columns concurrently. Hardwood cursor
+ * that borrow a caller-owned {@link java.util.concurrent.Executor} to invoke a
+ * batch's independent ranged column appenders concurrently. Hardwood cursor
  * advancement and typed getters remain on the calling thread, and the loader
  * never shuts down the borrowed executor. Convenience overloads can set the
  * maximum records per Hardwood column batch; overloads without that argument

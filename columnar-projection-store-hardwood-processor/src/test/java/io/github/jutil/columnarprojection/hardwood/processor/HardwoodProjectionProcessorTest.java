@@ -124,8 +124,17 @@ class HardwoodProjectionProcessorTest {
                         + "expectedSize)"),
                 generated);
         assertTrue(generated.contains(
-                "example.PriceProjectionStore.create(expectedSize, executor)"),
+                "example.PriceProjectionStore.create(expectedSize)"),
                 generated);
+        assertFalse(generated.contains("create(expectedSize, executor)"),
+                "generated loaders must not require create(int, Executor)");
+        assertTrue(generated.contains(
+                " columnAppender = store.columnAppender()"),
+                generated);
+        assertTrue(generated.contains(
+                "columnAppender.id(values0, 0, recordCount)"), generated);
+        assertTrue(generated.contains(
+                "java.util.concurrent.FutureTask<java.lang.Void>"), generated);
         assertTrue(generated.contains(
                 "load(dev.hardwood.reader.ParquetFileReader reader, "
                         + "int batchSize)"),
@@ -284,6 +293,39 @@ class HardwoodProjectionProcessorTest {
         String generated = compilation.generatedSource(
                 "example.PriceHardwoodLoader");
         assertTrue(generated.contains("example.PriceStore_ load("), generated);
+    }
+
+    @Test
+    void discoversCollisionSafeColumnAppenderReturnType() throws Exception {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("example.PriceProjection", SIMPLE_SCHEMA);
+        sources.put("example.PriceProjectionStore$ColumnAppender", """
+                package example;
+
+                final class PriceProjectionStore$ColumnAppender {
+                }
+                """);
+
+        CompilerTestSupport.Compilation compilation = compile(
+                temporaryDirectory.resolve("collision-safe-appender"),
+                sources,
+                false);
+
+        assertTrue(compilation.successful(), compilation.messages());
+        String generated = compilation.generatedSource(
+                "example.PriceProjectionHardwoodLoader");
+        try (URLClassLoader classLoader = compilation.classLoader()) {
+            Class<?> store = classLoader.loadClass(
+                    "example.PriceProjectionStore");
+            Class<?> appender = store.getMethod("columnAppender")
+                    .getReturnType();
+
+            assertEquals("ColumnAppender_", appender.getSimpleName());
+            assertTrue(generated.contains(
+                    appender.getCanonicalName()
+                            + " columnAppender = store.columnAppender()"),
+                    generated);
+        }
     }
 
     @Test

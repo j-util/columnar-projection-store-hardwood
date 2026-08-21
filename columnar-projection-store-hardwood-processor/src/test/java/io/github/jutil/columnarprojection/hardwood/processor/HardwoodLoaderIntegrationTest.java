@@ -136,6 +136,9 @@ class HardwoodLoaderIntegrationTest {
                 "example.AllMappingsHardwoodLoader");
         assertTrue(generated.contains("store.batch(0, recordCount)"),
                 generated);
+        assertTrue(generated.contains("store.columnAppender()"), generated);
+        assertFalse(generated.contains("create(expectedSize, executor)"),
+                generated);
         assertTrue(generated.contains(".getBooleans()"), generated);
         assertTrue(generated.contains(".getInts()"), generated);
         assertTrue(generated.contains(".getLongs()"), generated);
@@ -550,16 +553,17 @@ class HardwoodLoaderIntegrationTest {
     }
 
     @Test
-    void rejectedCopyIsPropagatedAndBorrowedExecutorRemainsUsable()
+    void rejectedAppenderTaskWaitsForAcceptedWorkAndBorrowsExecutor()
             throws Exception {
         Path parquet = temporaryDirectory.resolve("rejected-copy.parquet");
-        writeInts(parquet, 100);
+        writeAllMappings(parquet, 1);
         Class<?> loader = generatedClassLoader.loadClass(
-                "example.IntProjectionHardwoodLoader");
+                "example.AllMappingsHardwoodLoader");
         ColumnProjection projection = (ColumnProjection) loader
                 .getMethod("projection")
                 .invoke(null);
-        RejectOnceExecutor executor = new RejectOnceExecutor();
+        RejectAfterAcceptedTaskExecutor executor =
+                new RejectAfterAcceptedTaskExecutor();
 
         try (ParquetFileReader reader = ParquetFileReader.open(
                     InputFile.of(parquet));
@@ -568,17 +572,170 @@ class HardwoodLoaderIntegrationTest {
                     .build()) {
             Method load = loader.getMethod(
                     "load", ColumnReaders.class, int.class, Executor.class);
-            InvocationTargetException invocation = assertThrows(
-                    InvocationTargetException.class,
-                    () -> load.invoke(null, columns, 0, executor));
+            AtomicReference<Throwable> loadFailure = new AtomicReference<>();
+            CountDownLatch loadFinished = new CountDownLatch(1);
+            Thread loadingThread = new Thread(() -> {
+                try {
+                    load.invoke(null, columns, 0, executor);
+                } catch (InvocationTargetException exception) {
+                    loadFailure.set(exception.getCause());
+                } catch (Throwable failure) {
+                    loadFailure.set(failure);
+                } finally {
+                    loadFinished.countDown();
+                }
+            }, "hardwood-rejected-load-caller");
+            loadingThread.setDaemon(true);
 
-            assertSame(executor.rejection, invocation.getCause());
+            try {
+                loadingThread.start();
+                assertTrue(executor.awaitRejection(5, TimeUnit.SECONDS));
+                assertEquals(1L, loadFinished.getCount(),
+                        "rejection must not escape before accepted work ends");
+
+                executor.releaseAcceptedTask();
+                assertTrue(loadFinished.await(5, TimeUnit.SECONDS));
+                assertSame(executor.rejection, loadFailure.get());
+                assertEquals(2, executor.submissionCount());
+            } finally {
+                executor.releaseAcceptedTask();
+                loadingThread.join(TimeUnit.SECONDS.toMillis(5));
+            }
+            assertFalse(loadingThread.isAlive());
         }
 
         FutureTask<String> stillUsable = new FutureTask<>(
                 () -> "still usable");
         executor.execute(stillUsable);
         assertEquals("still usable", stillUsable.get());
+    }
+
+    @Test
+    void columnAppenderTaskFailureIsPropagated() throws Exception {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("failing.FailureProjection", """
+                package failing;
+
+                @io.github.jutil.columnarprojection.ProjectionSchema
+                @io.github.jutil.columnarprojection.hardwood.HardwoodProjection
+                public interface FailureProjection {
+                    int value();
+                }
+                """);
+        sources.put("failing.FailureProjectionStore", """
+                package failing;
+
+                public interface FailureProjectionStore extends
+                        io.github.jutil.columnarprojection.ProjectionStore<
+                                FailureProjection> {
+                    static FailureProjectionStore create(int expectedSize) {
+                        return new FailureProjection__ColumnarProjectionStore(
+                                expectedSize);
+                    }
+
+                    ColumnWriter columnAppender();
+
+                    Batch batch(int fromIndex, int toIndex);
+
+                    interface ColumnWriter {
+                        void value(int[] source, int fromIndex, int toIndex);
+                    }
+
+                    interface Batch {
+                        Batch value(int[] source);
+                        void append();
+                    }
+                }
+                """);
+        sources.put("failing.FailureProjection__ColumnarProjectionStore", """
+                package failing;
+
+                public final class FailureProjection__ColumnarProjectionStore
+                        implements FailureProjectionStore {
+                    private final ColumnWriter writer = (source, from, to) -> {
+                        throw new IllegalStateException("appender task failed");
+                    };
+
+                    public FailureProjection__ColumnarProjectionStore(
+                            int expectedSize) {
+                    }
+
+                    @Override
+                    public ColumnWriter columnAppender() {
+                        return writer;
+                    }
+
+                    @Override
+                    public Batch batch(int fromIndex, int toIndex) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public void add(FailureProjection value) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public int size() {
+                        return 0;
+                    }
+
+                    @Override
+                    public void seal() {
+                    }
+
+                    @Override
+                    public io.github.jutil.columnarprojection.ProjectionCursor<
+                            FailureProjection> cursor() {
+                        return null;
+                    }
+
+                    @Override
+                    public FailureProjection viewAt(int index) {
+                        return null;
+                    }
+                }
+                """);
+
+        CompilerTestSupport.Compilation compilation =
+                CompilerTestSupport.compile(
+                        temporaryDirectory.resolve("failing-appender"),
+                        sources,
+                        List.of(new HardwoodProjectionProcessor()));
+        assertTrue(compilation.successful(), compilation.messages());
+
+        Path parquet = temporaryDirectory.resolve("failing-appender.parquet");
+        writeInts(parquet, 101);
+        try (URLClassLoader classLoader = compilation.classLoader()) {
+            Class<?> loader = classLoader.loadClass(
+                    "failing.FailureProjectionHardwoodLoader");
+            ColumnProjection projection = (ColumnProjection) loader
+                    .getMethod("projection")
+                    .invoke(null);
+            CountingDirectExecutor executor = new CountingDirectExecutor();
+            try (ParquetFileReader reader = ParquetFileReader.open(
+                        InputFile.of(parquet));
+                 ColumnReaders columns = reader.buildColumnReaders(projection)
+                        .batchSize(1)
+                        .build()) {
+                Method load = loader.getMethod(
+                        "load",
+                        ColumnReaders.class,
+                        int.class,
+                        Executor.class);
+
+                IllegalStateException failure = assertInvocationFailure(
+                        IllegalStateException.class,
+                        load,
+                        columns,
+                        0,
+                        executor);
+
+                assertEquals("appender task failed", failure.getMessage());
+                assertEquals(1, executor.submissionCount);
+                assertEquals(1, executor.completionCount);
+            }
+        }
     }
 
     @Test
@@ -1054,19 +1211,46 @@ class HardwoodLoaderIntegrationTest {
         }
     }
 
-    private static final class RejectOnceExecutor implements Executor {
+    private static final class RejectAfterAcceptedTaskExecutor
+            implements Executor {
 
         private final RejectedExecutionException rejection =
                 new RejectedExecutionException("rejected copy");
-        private boolean reject = true;
+        private final AtomicInteger submissions = new AtomicInteger();
+        private final CountDownLatch rejectionSent = new CountDownLatch(1);
+        private final CountDownLatch releaseAcceptedTask =
+                new CountDownLatch(1);
 
         @Override
         public void execute(Runnable command) {
-            if (reject) {
-                reject = false;
+            int submission = submissions.incrementAndGet();
+            if (submission == 1) {
+                Thread worker = new Thread(() -> {
+                    awaitUninterruptibly(releaseAcceptedTask);
+                    command.run();
+                }, "hardwood-accepted-appender-worker");
+                worker.setDaemon(true);
+                worker.start();
+                return;
+            }
+            if (submission == 2) {
+                rejectionSent.countDown();
                 throw rejection;
             }
             command.run();
+        }
+
+        boolean awaitRejection(long timeout, TimeUnit unit)
+                throws InterruptedException {
+            return rejectionSent.await(timeout, unit);
+        }
+
+        void releaseAcceptedTask() {
+            releaseAcceptedTask.countDown();
+        }
+
+        int submissionCount() {
+            return submissions.get();
         }
     }
 

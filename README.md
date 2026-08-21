@@ -156,8 +156,8 @@ try (var columns = reader
 }
 ```
 
-Version `1.1.0` also generates executor-backed overloads for concurrent
-destination-column copies:
+Version `1.1.0` also generates executor-backed overloads that invoke the
+store's ranged per-column appenders concurrently:
 
 ```java
 import java.util.concurrent.ExecutorService;
@@ -173,11 +173,11 @@ try {
 }
 ```
 
-The executor is borrowed from the caller. The loader and generated store never
-shut it down; sealing only releases the store's reference to it. The caller may
-reuse one executor across loads and should shut it down only after all such
-loads have returned. Omit `4096` to use Hardwood's automatic batch sizing. The
-corresponding advanced overload is `load(ColumnReaders, int, Executor)`.
+The executor is borrowed from the caller. The loader never shuts it down, and
+the generated store does not retain it. The caller may reuse one executor
+across loads and should shut it down only after all such loads have returned.
+Omit `4096` to use Hardwood's automatic batch sizing. The corresponding
+advanced overload is `load(ColumnReaders, int, Executor)`.
 
 - All `ParquetFileReader` overloads require a non-null reader, create the
   projected `ColumnReaders`, and close only those created column readers. They
@@ -200,22 +200,25 @@ corresponding advanced overload is `load(ColumnReaders, int, Executor)`.
   input is advanced. The explicit capacity remains available for callers that
   configure filters, batches, or row-group selection themselves.
 - The executor overloads remain synchronous and preserve Hardwood's
-  single-threaded cursor contract. `nextBatch()`, typed column getters, and
-  generated batch setters run on the calling thread. For each non-empty batch,
-  `append()` submits one independent destination-array copy per projection
-  column and waits for every accepted task before advancing the input again.
-  Empty input submits no tasks.
+  single-threaded cursor contract. `nextBatch()` and every typed column getter
+  run on the calling thread. For each positive batch, the loader captures all
+  Hardwood arrays, submits one generated ranged column-appender call per
+  projection column using `[0, recordCount)`, and waits for every accepted task
+  before advancing the input again. Empty input submits no tasks.
 - A null executor is rejected before footers are read or caller-owned column
-  readers are advanced. If task submission or a copy fails, all accepted copy
-  tasks finish before the unchecked failure is propagated and no partial store
-  is returned. The input may already have consumed the current batch.
+  readers are advanced. If task submission or a ranged append fails, all
+  accepted appender tasks finish before the unchecked failure is propagated
+  and no partial store is returned. The input may already have consumed the
+  current batch.
 - If the loading thread is interrupted, an executor-backed overload preserves
   its interrupt status and throws `CancellationException` instead of sealing
   and returning a potentially truncated store.
-- All column mappings are validated before the first batch is advanced. Every
-  Hardwood batch is appended through the generated common-range batch API
-  using `[0, recordCount)`; array capacity beyond the logical row count is
-  ignored.
+- All column mappings are validated before the first batch is advanced.
+  Sequential overloads retain the generated common-range `batch(0,
+  recordCount)` path. Executor overloads create a separate store through
+  `create(expectedSize)` and use only its discovered `columnAppender()` ranged
+  methods for positive mutation. Array capacity beyond the logical row count
+  is ignored in both paths.
 - On successful exhaustion, including empty input, the returned store is
   sealed. If reading fails, no partial store is returned, although the input
   may already have been partially consumed.
@@ -225,13 +228,13 @@ Generated loaders are stateless. Building a store and consuming
 After sealing and safe publication, stores follow Columnar Projection Store's
 concurrent-read guarantees.
 
-Concurrent copying is most useful for wide schemas and sufficiently large
+Concurrent appending is most useful for wide schemas and sufficiently large
 batches. It adds one submitted task per column and does not guarantee a speedup
 for narrow or memory-bandwidth-bound loads. Reuse an executor rather than
 creating one for every small batch. Do not invoke a loader from a task running
 on the same saturated bounded executor that the loader borrows: the synchronous
-append must be able to run and join its copy tasks. A separate pool also avoids
-competing with Hardwood's own decode work.
+load must be able to run and join its appender tasks. A separate pool also
+avoids competing with Hardwood's own decode work.
 
 ## Supported mappings
 
@@ -288,9 +291,10 @@ The current `main` branch is version `1.1.0-SNAPSHOT` and requires the
 unpublished Hardwood core `1.1.0-SNAPSHOT` and Columnar Projection Store
 `1.3.0-SNAPSHOT` to be installed in the local Maven repository. These
 development dependencies include indexed, cached footer access for multi-file
-readers and the caller-owned executor batch factory. The normal consumer
-installation example above remains on the published `1.0.0` integration,
-Columnar Projection Store `1.2.0`, and Hardwood `1.0.0.Final`.
+readers and the generated `create(int)`, collision-safe `columnAppender()`
+return type, and ranged appender methods required by executor loading. The
+normal consumer installation example above remains on the published `1.0.0`
+integration, Columnar Projection Store `1.2.0`, and Hardwood `1.0.0.Final`.
 
 ## Build and tests
 
