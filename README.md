@@ -287,14 +287,15 @@ execution otherwise continues.
 
 ## Development from main
 
-The current `main` branch is version `1.1.0-SNAPSHOT` and requires the
-unpublished Hardwood core `1.1.0-SNAPSHOT` and Columnar Projection Store
-`1.3.0-SNAPSHOT` to be installed in the local Maven repository. These
-development dependencies include indexed, cached footer access for multi-file
-readers and the generated `create(int)`, collision-safe `columnAppender()`
-return type, and ranged appender methods required by executor loading. The
-normal consumer installation example above remains on the published `1.0.0`
-integration, Columnar Projection Store `1.2.0`, and Hardwood `1.0.0.Final`.
+The current `main` branch is version `1.1.0-SNAPSHOT` and requires Hardwood
+core `1.1.0.Beta1` plus the unpublished Columnar Projection Store
+`1.3.0-SNAPSHOT`. The latter must be installed in the local Maven repository.
+These development dependencies include indexed, cached footer access for
+multi-file readers and the generated `create(int)`, collision-safe
+`columnAppender()` return type, and ranged appender methods required by
+executor loading. The normal consumer installation example above remains on
+the published `1.0.0` integration, Columnar Projection Store `1.2.0`, and
+Hardwood `1.0.0.Final`.
 
 ## Build and tests
 

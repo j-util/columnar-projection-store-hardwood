@@ -602,7 +602,7 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "batch ranges into a generated store, and seals the store "
                 + "after successful exhaustion. Hardwood's column API is "
                 + "experimental, so this generated integration is tied to "
-                + "Hardwood 1.1.0-SNAPSHOT.");
+                + "Hardwood 1.1.0.Beta1.");
         line(source, " */");
         line(source, "@javax.annotation.processing.Generated(\""
                 + PROCESSOR_NAME + "\")");
