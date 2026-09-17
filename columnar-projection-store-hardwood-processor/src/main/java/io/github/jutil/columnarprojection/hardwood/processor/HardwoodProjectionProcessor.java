@@ -718,9 +718,11 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
         line(source, "     * @throws java.lang.IllegalArgumentException if "
                 + "{@code batchSize} is zero or negative, or if the Hardwood "
                 + "schema does not match this projection");
+        line(source, "     * @see #load(dev.hardwood.reader.ParquetFileReader)");
         line(source, "     */");
         line(source, "    public static " + storeName
-                + " load(dev.hardwood.reader.ParquetFileReader reader, "
+                + " loadWithBatchSize("
+                + "dev.hardwood.reader.ParquetFileReader reader, "
                 + "int batchSize) {");
         line(source, "        java.util.Objects.requireNonNull(reader, "
                 + "\"reader\");");
@@ -827,9 +829,12 @@ public final class HardwoodProjectionProcessor extends AbstractProcessor {
                 + "schema does not match this projection");
         line(source, "     * @throws java.util.concurrent.CancellationException "
                 + "if the loading thread is interrupted");
+        line(source, "     * @see #load(dev.hardwood.reader.ParquetFileReader, "
+                + "java.util.concurrent.Executor)");
         line(source, "     */");
         line(source, "    public static " + storeName
-                + " load(dev.hardwood.reader.ParquetFileReader reader, "
+                + " loadWithBatchSize("
+                + "dev.hardwood.reader.ParquetFileReader reader, "
                 + "int batchSize, java.util.concurrent.Executor executor) {");
         line(source, "        java.util.Objects.requireNonNull(reader, "
                 + "\"reader\");");

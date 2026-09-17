@@ -123,6 +123,26 @@ class HardwoodLoaderIntegrationTest {
                     }
                 }
                 """);
+        sources.put("example.BatchSizeConsumer", """
+                package example;
+
+                public final class BatchSizeConsumer {
+                    public static IntProjectionStore loadWithBatchSize(
+                            dev.hardwood.reader.ParquetFileReader reader,
+                            int batchSize) {
+                        return IntProjectionHardwoodLoader.loadWithBatchSize(
+                                reader, batchSize);
+                    }
+
+                    public static IntProjectionStore loadWithBatchSize(
+                            dev.hardwood.reader.ParquetFileReader reader,
+                            int batchSize,
+                            java.util.concurrent.Executor executor) {
+                        return IntProjectionHardwoodLoader.loadWithBatchSize(
+                                reader, batchSize, executor);
+                    }
+                }
+                """);
 
         CompilerTestSupport.Compilation compilation =
                 CompilerTestSupport.compile(
@@ -245,8 +265,10 @@ class HardwoodLoaderIntegrationTest {
         writeInts(parquet, 60, 61, 62, 63, 64);
         Class<?> loader = generatedClassLoader.loadClass(
                 "example.IntProjectionHardwoodLoader");
-        Method load = loader.getMethod(
-                "load", ParquetFileReader.class, int.class);
+        Class<?> consumer = generatedClassLoader.loadClass(
+                "example.BatchSizeConsumer");
+        Method load = consumer.getMethod(
+                "loadWithBatchSize", ParquetFileReader.class, int.class);
         ColumnProjection projection = (ColumnProjection) loader
                 .getMethod("projection")
                 .invoke(null);
@@ -277,8 +299,10 @@ class HardwoodLoaderIntegrationTest {
         writeInts(parquet, 70, 71, 72, 73, 74);
         Class<?> loader = generatedClassLoader.loadClass(
                 "example.IntProjectionHardwoodLoader");
-        Method load = loader.getMethod(
-                "load",
+        Class<?> consumer = generatedClassLoader.loadClass(
+                "example.BatchSizeConsumer");
+        Method load = consumer.getMethod(
+                "loadWithBatchSize",
                 ParquetFileReader.class,
                 int.class,
                 Executor.class);
@@ -320,11 +344,11 @@ class HardwoodLoaderIntegrationTest {
                 "explicit-empty.parquet");
         writeInts(parquet);
         Class<?> loader = generatedClassLoader.loadClass(
-                "example.IntProjectionHardwoodLoader");
+                "example.BatchSizeConsumer");
         Method sequentialLoad = loader.getMethod(
-                "load", ParquetFileReader.class, int.class);
+                "loadWithBatchSize", ParquetFileReader.class, int.class);
         Method executorLoad = loader.getMethod(
-                "load",
+                "loadWithBatchSize",
                 ParquetFileReader.class,
                 int.class,
                 Executor.class);
@@ -356,11 +380,11 @@ class HardwoodLoaderIntegrationTest {
                 "invalid-explicit-batch.parquet");
         writeInts(parquet, 80, 81, 82);
         Class<?> loader = generatedClassLoader.loadClass(
-                "example.IntProjectionHardwoodLoader");
+                "example.BatchSizeConsumer");
         Method sequentialLoad = loader.getMethod(
-                "load", ParquetFileReader.class, int.class);
+                "loadWithBatchSize", ParquetFileReader.class, int.class);
         Method executorLoad = loader.getMethod(
-                "load",
+                "loadWithBatchSize",
                 ParquetFileReader.class,
                 int.class,
                 Executor.class);
@@ -425,6 +449,72 @@ class HardwoodLoaderIntegrationTest {
                         "the invalid calls must precede the trapped footer");
             }
         }
+    }
+
+    @Test
+    void explicitBatchSizeMethodsRejectNullsBeforeInputWork() throws Exception {
+        Class<?> consumer = generatedClassLoader.loadClass(
+                "example.BatchSizeConsumer");
+        Method sequentialLoad = consumer.getMethod(
+                "loadWithBatchSize", ParquetFileReader.class, int.class);
+        Method executorLoad = consumer.getMethod(
+                "loadWithBatchSize",
+                ParquetFileReader.class,
+                int.class,
+                Executor.class);
+        CountingDirectExecutor executor = new CountingDirectExecutor();
+
+        for (int batchSize : new int[]{2, 0, -1}) {
+            NullPointerException sequentialFailure = assertInvocationFailure(
+                    NullPointerException.class,
+                    sequentialLoad,
+                    null,
+                    batchSize);
+            assertEquals("reader", sequentialFailure.getMessage());
+            NullPointerException executorFailure = assertInvocationFailure(
+                    NullPointerException.class,
+                    executorLoad,
+                    null,
+                    batchSize,
+                    null);
+            assertEquals("reader", executorFailure.getMessage());
+        }
+
+        Path first = temporaryDirectory.resolve("null-batch-first.parquet");
+        Path second = temporaryDirectory.resolve("null-batch-second.parquet");
+        writeInts(first, 90);
+        writeInts(second, 91);
+        IOException original = new IOException("null-executor footer trap");
+        InputFile failing = new MetadataFailingInputFile(
+                InputFile.of(second), original);
+        try (ParquetFileReader reader = ParquetFileReader.openAll(List.of(
+                InputFile.of(first), failing))) {
+            for (int invalidBatchSize : new int[]{0, -1}) {
+                assertInvocationFailure(
+                        IllegalArgumentException.class,
+                        executorLoad,
+                        reader,
+                        invalidBatchSize,
+                        null);
+            }
+            NullPointerException failure = assertInvocationFailure(
+                    NullPointerException.class,
+                    executorLoad,
+                    reader,
+                    2,
+                    null);
+            assertEquals("executor", failure.getMessage());
+
+            UncheckedIOException footerFailure = assertInvocationFailure(
+                    UncheckedIOException.class,
+                    executorLoad,
+                    reader,
+                    2,
+                    executor);
+            assertSame(original, footerFailure.getCause(),
+                    "argument checks must precede the trapped footer");
+        }
+        assertEquals(0, executor.submissionCount);
     }
 
     @Test

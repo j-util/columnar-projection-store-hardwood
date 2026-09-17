@@ -2,9 +2,12 @@ package io.github.jutil.columnarprojection.hardwood.processor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.jutil.columnarprojection.processor.ProjectionSchemaProcessor;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.URLClassLoader;
@@ -14,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 import javax.annotation.processing.Processor;
 import org.junit.jupiter.api.Test;
@@ -49,10 +53,10 @@ class HardwoodProjectionProcessorTest {
                         return PriceProjectionHardwoodLoader.load(reader);
                     }
 
-                    static PriceProjectionStore load(
+                    static PriceProjectionStore loadWithBatchSize(
                             dev.hardwood.reader.ParquetFileReader reader,
                             int batchSize) {
-                        return PriceProjectionHardwoodLoader.load(
+                        return PriceProjectionHardwoodLoader.loadWithBatchSize(
                                 reader, batchSize);
                     }
 
@@ -63,11 +67,11 @@ class HardwoodProjectionProcessorTest {
                                 reader, executor);
                     }
 
-                    static PriceProjectionStore load(
+                    static PriceProjectionStore loadWithBatchSize(
                             dev.hardwood.reader.ParquetFileReader reader,
                             int batchSize,
                             java.util.concurrent.Executor executor) {
-                        return PriceProjectionHardwoodLoader.load(
+                        return PriceProjectionHardwoodLoader.loadWithBatchSize(
                                 reader, batchSize, executor);
                     }
 
@@ -136,7 +140,7 @@ class HardwoodProjectionProcessorTest {
         assertTrue(generated.contains(
                 "java.util.concurrent.FutureTask<java.lang.Void>"), generated);
         assertTrue(generated.contains(
-                "load(dev.hardwood.reader.ParquetFileReader reader, "
+                "loadWithBatchSize(dev.hardwood.reader.ParquetFileReader reader, "
                         + "int batchSize)"),
                 generated);
         assertTrue(generated.contains(
@@ -161,10 +165,14 @@ class HardwoodProjectionProcessorTest {
                         + "java.util.concurrent.Executor executor)"),
                 generated);
         assertTrue(generated.contains(
-                "load(dev.hardwood.reader.ParquetFileReader reader, "
+                "loadWithBatchSize(dev.hardwood.reader.ParquetFileReader reader, "
                         + "int batchSize, "
                         + "java.util.concurrent.Executor executor)"),
                 generated);
+        assertFalse(generated.contains(
+                " load(dev.hardwood.reader.ParquetFileReader reader, "
+                        + "int batchSize"),
+                "explicit batch sizes must not retain ambiguous load aliases");
         assertTrue(generated.contains(
                 "load(dev.hardwood.reader.ColumnReaders readers, "
                         + "int expectedSize, "
@@ -187,7 +195,7 @@ class HardwoodProjectionProcessorTest {
             Method readerLoad = loader.getMethod(
                     "load", dev.hardwood.reader.ParquetFileReader.class);
             Method batchSizeReaderLoad = loader.getMethod(
-                    "load",
+                    "loadWithBatchSize",
                     dev.hardwood.reader.ParquetFileReader.class,
                     int.class);
             Method advancedLoad = loader.getMethod(
@@ -197,7 +205,7 @@ class HardwoodProjectionProcessorTest {
                     dev.hardwood.reader.ParquetFileReader.class,
                     java.util.concurrent.Executor.class);
             Method batchSizeExecutorReaderLoad = loader.getMethod(
-                    "load",
+                    "loadWithBatchSize",
                     dev.hardwood.reader.ParquetFileReader.class,
                     int.class,
                     java.util.concurrent.Executor.class);
@@ -232,15 +240,65 @@ class HardwoodProjectionProcessorTest {
             assertEquals(Set.of(
                     "projection()",
                     "load(dev.hardwood.reader.ParquetFileReader)",
-                    "load(dev.hardwood.reader.ParquetFileReader,int)",
+                    "loadWithBatchSize(dev.hardwood.reader.ParquetFileReader,int)",
                     "load(dev.hardwood.reader.ParquetFileReader,"
                             + "java.util.concurrent.Executor)",
-                    "load(dev.hardwood.reader.ParquetFileReader,int,"
+                    "loadWithBatchSize(dev.hardwood.reader.ParquetFileReader,int,"
                             + "java.util.concurrent.Executor)",
                     "load(dev.hardwood.reader.ColumnReaders,int)",
                     "load(dev.hardwood.reader.ColumnReaders,int,"
                             + "java.util.concurrent.Executor)"),
                     publicSignatures);
+        }
+    }
+
+    @Test
+    void nullReaderCallsResolveToColumnReadersOverloads() throws Exception {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("example.PriceProjection", SIMPLE_SCHEMA);
+        sources.put("example.NullReaderConsumer", """
+                package example;
+
+                public final class NullReaderConsumer {
+                    public static PriceProjectionStore literal(
+                            java.util.concurrent.Executor executor) {
+                        return PriceProjectionHardwoodLoader.load(null, 0);
+                    }
+
+                    public static PriceProjectionStore boxed(
+                            java.util.concurrent.Executor executor) {
+                        return PriceProjectionHardwoodLoader.load(
+                                null, Integer.valueOf(0));
+                    }
+
+                    public static PriceProjectionStore executor(
+                            java.util.concurrent.Executor executor) {
+                        return PriceProjectionHardwoodLoader.load(
+                                null, 0, executor);
+                    }
+                }
+                """);
+
+        CompilerTestSupport.Compilation compilation = compile(
+                temporaryDirectory.resolve("null-reader-consumer"),
+                sources,
+                false);
+        assertTrue(compilation.successful(), compilation.messages());
+
+        try (URLClassLoader classLoader = compilation.classLoader()) {
+            Class<?> consumer = classLoader.loadClass(
+                    "example.NullReaderConsumer");
+            Executor executor = Runnable::run;
+            for (String name : List.of("literal", "boxed", "executor")) {
+                Method method = consumer.getMethod(name, Executor.class);
+                InvocationTargetException failure = assertThrows(
+                        InvocationTargetException.class,
+                        () -> method.invoke(null, executor));
+                NullPointerException cause = assertInstanceOf(
+                        NullPointerException.class, failure.getCause());
+                assertEquals("readers", cause.getMessage(),
+                        "the call must select the ColumnReaders overload");
+            }
         }
     }
 

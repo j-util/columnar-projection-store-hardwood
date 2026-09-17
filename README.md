@@ -134,7 +134,7 @@ without constructing column readers yourself:
 
 ```java
 PriceProjectionStore store =
-        PriceProjectionHardwoodLoader.load(reader, 4096);
+        PriceProjectionHardwoodLoader.loadWithBatchSize(reader, 4096);
 ```
 
 The batch size must be greater than zero. It is validated before the loader
@@ -166,7 +166,7 @@ import java.util.concurrent.Executors;
 ExecutorService columnCopies = Executors.newFixedThreadPool(3);
 try {
     PriceProjectionStore store =
-            PriceProjectionHardwoodLoader.load(
+            PriceProjectionHardwoodLoader.loadWithBatchSize(
                     reader, 4096, columnCopies);
 } finally {
     columnCopies.shutdown();
@@ -176,15 +176,15 @@ try {
 The executor is borrowed from the caller. The loader never shuts it down, and
 the generated store does not retain it. The caller may reuse one executor
 across loads and should shut it down only after all such loads have returned.
-Omit `4096` to use Hardwood's automatic batch sizing. The corresponding
-advanced overload is `load(ColumnReaders, int, Executor)`.
+Use `load(reader, columnCopies)` for Hardwood's automatic batch sizing. The
+corresponding advanced overload is `load(ColumnReaders, int, Executor)`.
 
 - All `ParquetFileReader` overloads require a non-null reader, create the
   projected `ColumnReaders`, and close only those created column readers. They
   never close the caller's `ParquetFileReader`.
-- `load(ParquetFileReader, int)` and
-  `load(ParquetFileReader, int, Executor)` treat `batchSize` as the maximum
-  records Hardwood returns per column batch. Zero and negative values cause
+- `loadWithBatchSize(ParquetFileReader, int)` and
+  `loadWithBatchSize(ParquetFileReader, int, Executor)` treat `batchSize` as the
+  maximum records Hardwood returns per column batch. Zero and negative values cause
   `IllegalArgumentException` before footers are read, column readers are
   constructed, or input is advanced.
 - Before allocating, every `ParquetFileReader` overload reads each supplied

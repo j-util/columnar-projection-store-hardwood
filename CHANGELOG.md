@@ -6,8 +6,9 @@ All notable user-visible changes are documented in this file.
 
 ### Added
 
-- Generated `load(ParquetFileReader, int batchSize)` and
-  `load(ParquetFileReader, int batchSize, Executor)` convenience overloads.
+- Generated `loadWithBatchSize(ParquetFileReader, int batchSize)` and
+  `loadWithBatchSize(ParquetFileReader, int batchSize, Executor)` convenience
+  overloads.
   The positive batch size bounds the records Hardwood returns per column batch
   and is rejected before footer reads, column-reader construction, or input
   advancement when zero or negative. Overloads without `batchSize` retain
@@ -26,6 +27,10 @@ All notable user-visible changes are documented in this file.
 
 ### Changed
 
+- Renamed the unreleased explicit-batch-size Parquet reader methods to
+  `loadWithBatchSize`, preserving their behavior and keeping null-reader calls
+  to `load(null, expectedSize)` and `load(null, expectedSize, executor)`
+  unambiguous for the existing `ColumnReaders` overloads.
 - Convenience loading now reads and exactly sums every supplied file's cached
   footer before allocating, so ordered multi-file materialization starts with
   the combined row-count capacity instead of the first file's row-count hint.
