@@ -12,8 +12,8 @@ without row objects, runtime reflection, dynamic proxies, or per-row
 This is an independent j-util integration. It is not affiliated with or
 endorsed by the Hardwood project or its maintainers.
 
-The project requires Java 21 or newer. The published stable release is `1.0.0`;
-`1.1.0-Beta1` is being prepared as a prerelease.
+The project requires Java 21 or newer. Version `1.0.0` is stable;
+version `1.1.0-Beta1` is a prerelease.
 
 Published artifacts:
 
@@ -36,8 +36,8 @@ Choose the matching integration and dependency versions:
 | `1.1.0-Beta1` | `1.3.0` | `1.1.0.Beta1` | Prerelease |
 
 The Maven configuration below uses the `1.1.0-Beta1` prerelease version set.
-It will resolve from Maven Central after publication. Add these sections to
-your project's `pom.xml` to include the runtime and both annotation processors:
+Add these sections to your project's `pom.xml` to include the runtime and both
+annotation processors:
 
 ```xml
 <properties>
