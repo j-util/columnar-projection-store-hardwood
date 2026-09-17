@@ -7,7 +7,7 @@
 
     <groupId>io.github.j-util</groupId>
     <artifactId>columnar-projection-store-hardwood-build</artifactId>
-    <version>1.1.0-SNAPSHOT</version>
+    <version>1.1.0-Beta1</version>
     <packaging>pom</packaging>
 
     <name>Columnar Projection Store Hardwood Build</name>
@@ -40,7 +40,7 @@
         <connection>scm:git:https://github.com/j-util/columnar-projection-store-hardwood.git</connection>
         <developerConnection>scm:git:ssh://git@github.com/j-util/columnar-projection-store-hardwood.git</developerConnection>
         <url>https://github.com/j-util/columnar-projection-store-hardwood</url>
-        <tag>HEAD</tag>
+        <tag>v1.1.0-Beta1</tag>
     </scm>
 
     <modules>

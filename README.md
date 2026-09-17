@@ -12,7 +12,8 @@ without row objects, runtime reflection, dynamic proxies, or per-row
 This is an independent j-util integration. It is not affiliated with or
 endorsed by the Hardwood project or its maintainers.
 
-The project requires Java 21 or newer. The initial release is `1.0.0`.
+The project requires Java 21 or newer. The published stable release is `1.0.0`;
+`1.1.0-Beta1` is being prepared as a prerelease.
 
 Published artifacts:
 
@@ -27,13 +28,22 @@ Published artifacts:
 
 ## Installation
 
-Add the runtime artifact and configure both annotation processors explicitly:
+Choose the matching integration and dependency versions:
+
+| Integration | CPS | Hardwood | Status |
+| --- | --- | --- | --- |
+| `1.0.0` | `1.2.0` | `1.0.0.Final` | Stable |
+| `1.1.0-Beta1` | `1.3.0` | `1.1.0.Beta1` | Prerelease |
+
+The Maven configuration below uses the `1.1.0-Beta1` prerelease version set.
+It will resolve from Maven Central after publication. Add these sections to
+your project's `pom.xml` to include the runtime and both annotation processors:
 
 ```xml
 <properties>
     <maven.compiler.release>21</maven.compiler.release>
-    <columnar-projection-store.version>1.2.0</columnar-projection-store.version>
-    <columnar-projection-store-hardwood.version>1.0.0</columnar-projection-store-hardwood.version>
+    <columnar-projection-store.version>1.3.0</columnar-projection-store.version>
+    <columnar-projection-store-hardwood.version>1.1.0-Beta1</columnar-projection-store-hardwood.version>
 </properties>
 
 <dependencies>
@@ -70,6 +80,11 @@ Add the runtime artifact and configure both annotation processors explicitly:
     </plugins>
 </build>
 ```
+
+For the published stable installation, use the same configuration with
+`columnar-projection-store-hardwood.version` set to `1.0.0` and
+`columnar-projection-store.version` set to `1.2.0`. That integration brings
+Hardwood core `1.0.0.Final` transitively; the prerelease brings `1.1.0.Beta1`.
 
 Both processor paths are required. Their order is immaterial. If the Columnar
 Projection Store processor is absent, the Hardwood processor emits a compiler
@@ -129,6 +144,9 @@ name. `Outer.PriceProjection`, for example, produces the public top-level type
 
 ## Batch sizing, advanced loading, and ownership
 
+The explicit batch-size and executor overloads below are available in
+`1.1.0-Beta1`.
+
 Set an explicit upper bound on the records Hardwood returns per column batch
 without constructing column readers yourself:
 
@@ -156,7 +174,7 @@ try (var columns = reader
 }
 ```
 
-Version `1.1.0` also generates executor-backed overloads that invoke the
+Version `1.1.0-Beta1` also generates executor-backed overloads that invoke the
 store's ranged per-column appenders concurrently:
 
 ```java
@@ -255,22 +273,32 @@ null elements are preserved.
 
 ## Limitations and compatibility
 
+Prerelease version `1.1.0-Beta1` targets exactly:
+
+- Columnar Projection Store `1.3.0`;
+- Hardwood core `1.1.0.Beta1`;
+- Java 21 and newer.
+
 Version `1.0.0` targets exactly:
 
 - Columnar Projection Store `1.2.0`;
 - Hardwood core `1.0.0.Final`;
 - Java 21 and newer.
 
+Version `1.1.0-Beta1` is intentionally marked prerelease because it depends on
+Hardwood's experimental column-reader and validity APIs. Future Hardwood
+changes may require a new integration release even when the Parquet mapping
+is unchanged. Users wanting the stable dependency line can remain on `1.0.0`.
+
+The prerelease uses indexed, cached footer access for multi-file readers and
+the CPS `1.3.0` generated `create(int)`, collision-safe `columnAppender()` return
+type, and ranged appender methods required by executor loading.
+
 Only flat, non-repeated columns are supported. Nested structures, repeated
 columns, boxed primitives, column-name remapping, logical-type conversions,
 loader-owned filters, writes, and arbitrary projection return types are
-outside the `1.0` scope. Accessor names are used verbatim as Hardwood column
-names.
-
-Hardwood marks its column-reader and validity APIs experimental. Generated
-loaders intentionally compile against those APIs for a zero-row-object bridge;
-a future Hardwood release may therefore require a new integration version even
-when the Parquet mapping is unchanged.
+outside this integration's scope. Accessor names are used verbatim as Hardwood
+column names.
 
 Hardwood's codec libraries are optional dependencies. Add the codec required
 by the files you read—such as Snappy, Zstandard, LZ4, or Brotli—to the
@@ -284,18 +312,6 @@ recommends `--enable-native-access=ALL-UNNAMED` when enabling that acceleration.
 Add the option to the application JVM to authorize the native access and avoid
 the warning. It is not required merely because the warning appears when
 execution otherwise continues.
-
-## Development from main
-
-The current `main` branch is version `1.1.0-SNAPSHOT` and requires Hardwood
-core `1.1.0.Beta1` plus the published Columnar Projection Store
-`1.3.0`, which resolves from Maven Central.
-These development dependencies include indexed, cached footer access for
-multi-file readers and the generated `create(int)`, collision-safe
-`columnAppender()` return type, and ranged appender methods required by
-executor loading. The normal consumer installation example above remains on
-the published `1.0.0` integration, Columnar Projection Store `1.2.0`, and
-Hardwood `1.0.0.Final`.
 
 ## Build and tests
 

@@ -2,7 +2,10 @@
 
 All notable user-visible changes are documented in this file.
 
-## 1.1.0 - Unreleased
+## 1.1.0-Beta1 - 2026-09-17
+
+This prerelease targets Hardwood core `1.1.0.Beta1` and its experimental column
+APIs.
 
 ### Added
 
@@ -27,17 +30,13 @@ All notable user-visible changes are documented in this file.
 
 ### Changed
 
-- Renamed the unreleased explicit-batch-size Parquet reader methods to
-  `loadWithBatchSize`, preserving their behavior and keeping null-reader calls
-  to `load(null, expectedSize)` and `load(null, expectedSize, executor)`
-  unambiguous for the existing `ColumnReaders` overloads.
 - Convenience loading now reads and exactly sums every supplied file's cached
   footer before allocating, so ordered multi-file materialization starts with
   the combined row-count capacity instead of the first file's row-count hint.
 - Indexed footer-read failures are exposed as `UncheckedIOException` without
   adding a checked exception to the generated loader API; combined row-count
   overflow is reported as `ArithmeticException`.
-- Development now targets Columnar Projection Store `1.3.0`, while retaining
+- Version `1.1.0-Beta1` targets Columnar Projection Store `1.3.0`, while retaining
   the existing sequential loader overloads and their ranged-batch path for
   source and binary compatibility. Executor loaders discover the generated
   store's actual collision-safe `columnAppender()` return type and require
